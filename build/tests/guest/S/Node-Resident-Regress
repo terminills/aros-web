@@ -1,0 +1,33 @@
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; S:Node-Resident-Regress - node.library / uv1.library expunge paths
+; (aros-adt-src d3411393): a resident node.library must survive a library
+; flush from a foreign task (vetoed, stays resident with LIBF_DELEXP) and
+; expunge cleanly from its own last closer, and C:Node must reopen it after
+; both.  CLI commands run in the shell's own process, so "Avail FLUSH" from
+; this shell is the closer task and "Run Avail FLUSH" is a foreign one.
+; Run: AROS_LAUNCH_VIA=shell AROS_SHELL_CMD='Execute S:Node-Resident-Regress'
+;      AROS_ACTIONS_FILE=tests/actions/node-resident-regress.txt - Execute feeds
+;      the script into the calling shell, so a redirect on Execute does not
+;      capture the Echo lines: the resident-70 snapshot of the console is the
+;      evidence (NODE1..4_RC=0 and NODE4_EVAL_OK)
+Echo "NODE_RESIDENT_START"
+Stack 10485760
+C:Node --version
+Echo "NODE1_RC=$RC"
+Avail FLUSH >NIL:
+Echo "FLUSH_SAME_TASK_DONE"
+C:Node --version
+Echo "NODE2_RC=$RC"
+Run >NIL: Avail FLUSH
+Wait 3
+Echo "FLUSH_FOREIGN_TASK_DONE"
+C:Node --version
+Echo "NODE3_RC=$RC"
+Run >NIL: Avail FLUSH
+Wait 3
+Avail FLUSH >NIL:
+Echo "FLUSH_BOTH_DONE"
+C:Node -e "console.log('NODE4_EVAL_OK ' + process.version)"
+Echo "NODE4_RC=$RC"
+Echo "NODE_RESIDENT_DONE"
+Wait 5

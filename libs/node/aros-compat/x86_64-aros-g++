@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+#
+#   Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+#   Target C++ compiler/linker wrapper for the Node 22 cross build
+#.  See x86_64-aros-gcc for the environment contract:
+#
+#     NODE_AROS_CXX         the crosstools x86_64-aros-g++ to run
+#     NODE_AROS_COMPAT_DIR  workbench/libs/node/include-aros
+#
+#   C++ units get the compat header but not the posixc/stdc include views
+#   (the C++ standard headers must win).  -rdynamic is meaningless for a
+#   static AROS link, and uv1 must be pulled in whole: the uv1 linklib is a
+#   trampoline set whose members are only referenced through node's ABI
+#   stubs, so a plain -luv1 would drop them.
+
+set -u
+
+: "${NODE_AROS_CXX:?NODE_AROS_CXX (real x86_64-aros-g++) is not set}"
+compat_dir="${NODE_AROS_COMPAT_DIR:-$(cd "$(dirname "$0")/../include-aros" && pwd)}"
+
+args=()
+compat_include=(-include "$compat_dir/aros-node-compat.h")
+for a in "$@"; do
+    case "$a" in
+        -pthread|-rdynamic|-DZSTD_MULTITHREAD) continue ;;
+        # Preprocess-only runs are configure.py's compiler probes; the compat
+        # header must not appear in their output.
+        -E) compat_include=() ;;
+        -luv1)
+            args+=("-Wl,--whole-archive" "$a" "-Wl,--no-whole-archive")
+            continue
+            ;;
+    esac
+    args+=("$a")
+done
+
+exec "$NODE_AROS_CXX" \
+    -mcmodel=large -mno-red-zone \
+    -I"$compat_dir" "${compat_include[@]}" \
+    -DM_METHOD=3 -DRIO_NOTIFIER_METHOD=1 \
+    -DOPENSSL_NO_DSO -DOPENSSL_NO_DTLS \
+    -DOPENSSL_NO_SECURE_MEMORY -DZSTD_TRACE=0 "${args[@]}"

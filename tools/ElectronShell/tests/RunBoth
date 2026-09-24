@@ -1,0 +1,16 @@
+.key SWITCHES/F
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; RunBoth - VS Code (primary, slot 0) + GitHub Desktop (extra app) in ONE
+; ElectronShell: the phase-1 demo shape, two real Electron apps on
+; one engine. Expects SYS:Developer/VSCode and SYS:Developer/GitHubDesktop.
+; Anything on the command line is passed to ElectronShell as extra switches
+; (e.g. --vmodule=aros_window=2 --log-file=SYS:Developer/Chromium/electron.log).
+;
+;   Execute SYS:Developer/ElectronShell/RunBoth
+FailAt 21
+If NOT EXISTS ENV:HOME
+  SetEnv HOME RAM:
+EndIf
+Echo "RunBoth: start"
+SYS:Tools/ElectronShell --single-process "--main-script=SYS:Developer/VSCode/out/main.js" "--app-script=SYS:Developer/GitHubDesktop/out/main.js" --standard-schemes=vscode-file,vscode-webview --secure-schemes=vscode-file,vscode-webview --cors-schemes=vscode-file,vscode-webview --fetch-schemes=vscode-file,vscode-webview --service-worker-schemes=vscode-webview --force-disable-user-env --enable-features=SharedArrayBuffer <SWITCHES>
+Echo "RunBoth: ElectronShell rc=$RC"

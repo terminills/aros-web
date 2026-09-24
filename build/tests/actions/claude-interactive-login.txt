@@ -1,0 +1,11 @@
+# Claude Code interactive TUI on hosted clean ADT: accept the theme prompt,
+# then the login-method prompt, and watch the OAuth hand-off (BROWSER=C:OpenURL).
+# Return = rawkey 0x44 via input.device (the CONNG window is the active one).
+45 snap claude-i-45
+60 sh SYS:Developer/Chromium/Inject key 0x44
+70 snap claude-i-70
+85 sh SYS:Developer/Chromium/Inject key 0x44
+100 snap claude-i-100
+130 snap claude-i-130
+170 snap claude-i-170
+220 snap claude-i-220

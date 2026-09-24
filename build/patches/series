@@ -1,0 +1,2 @@
+# One patch filename per line, applied with `git am`.
+# Keep Chromium integration commits here; never apply them to ADT.

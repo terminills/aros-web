@@ -1,0 +1,87 @@
+#
+# cef-blink.library -- exact-build CEF/Blink compatibility implementation.
+#
+# CEF and Blink directly share writable and address-bearing C++ objects.  Keep
+# that closure in one native module and expose only a typed C ABI to the stable
+# cef.library facade.  V8 remains external through v8.library.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+# out/aros-cef-bootstrap is built against an earlier, non-ADT sysroot
+# with that tree's own crosstools, so its
+# libcef.a is not a valid artifact for this tree: linking it here mixes two
+# toolchains' libstdc++ in one module, which is the ABI hazard that bakes
+# differing pthread_mutex_t/semaphore sizes into a single binary. The -adt
+# output is the same CEF configuration with only aros_sysroot and
+# aros_toolchain_root repointed at aros-adt-hosted-clean and
+# aros-adt-crosstools, matching what out/aros-chrome-adt-clean and
+# out/aros-v8-library-adt already do.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
+CEF_ARCHIVE := $(CEF_OUTPUT)/obj/cef/libcef.a
+
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
+    -Wl,--whole-archive $(CEF_ARCHIVE) -Wl,--no-whole-archive
+
+# Chromium embeds glibc-sized synchronization objects.  Redirect their ABI to
+# the proven out-of-line AROS implementations inside this module.
+USER_LDFLAGS += \
+    -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy \
+    -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock \
+    -Wl,--wrap=pthread_mutex_unlock \
+    -Wl,--wrap=pthread_mutexattr_init -Wl,--wrap=pthread_mutexattr_destroy \
+    -Wl,--wrap=pthread_mutexattr_settype \
+    -Wl,--wrap=pthread_cond_init -Wl,--wrap=pthread_cond_destroy \
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait \
+    -Wl,--wrap=pthread_cond_clockwait -Wl,--wrap=pthread_cond_signal \
+    -Wl,--wrap=pthread_cond_broadcast \
+    -Wl,--wrap=pthread_condattr_init -Wl,--wrap=pthread_condattr_destroy \
+    -Wl,--wrap=pthread_condattr_setclock \
+    -Wl,--wrap=pthread_rwlock_init -Wl,--wrap=pthread_rwlock_destroy \
+    -Wl,--wrap=pthread_rwlock_rdlock -Wl,--wrap=pthread_rwlock_tryrdlock \
+    -Wl,--wrap=pthread_rwlock_wrlock -Wl,--wrap=pthread_rwlock_trywrlock \
+    -Wl,--wrap=pthread_rwlock_unlock \
+    -Wl,--wrap=pthread_once \
+    -Wl,--wrap=pthread_getattr_np -Wl,--wrap=pthread_attr_getstack \
+    -Wl,--wrap=pthread_attr_init -Wl,--wrap=pthread_attr_destroy \
+    -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=pthread_create \
+    -Wl,--wrap=sem_init -Wl,--wrap=sem_destroy -Wl,--wrap=sem_post \
+    -Wl,--wrap=sem_trywait -Wl,--wrap=sem_wait -Wl,--wrap=sem_timedwait
+
+CEF_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/../v8/engine
+CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/pthread-abi-aros \
+                   $(CEF_ENGINE_DIR)/emutls-aros
+
+# linuxso: base/native_library_aros.cc reaches linuxso.library for
+# linuxso_open/linuxso_sym/linuxso_close, which is how the Widevine CDM is
+# loaded natively. Without it the module links with exactly those three
+# symbols undefined.
+CEF_BLINK_USELIBS := stdc++ stdc stdcio posixc pthread m atomic \
+    debug net cybergraphics graphics intuition oop v8 linuxso
+
+#MM workbench-libs-cef-blink-public-includes
+CEF_BLINK_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
+%copy_includes mmake=workbench-libs-cef-blink-public-includes \
+    path=libraries dir=include/libraries includes=$(CEF_BLINK_PUBLIC_INCLUDES)
+
+#MM workbench-libs-cef-blink : workbench-libs-cef-blink-archive-check \
+#MM     workbench-libs-cef-blink-public-includes workbench-libs-v8
+#MM workbench-libs-cef-blink-archive-check
+workbench-libs-cef-blink-archive-check:
+	@test -f "$(CEF_ARCHIVE)" || { \
+	    $(ECHO) "Missing CEF archive: $(CEF_ARCHIVE)"; \
+	    $(ECHO) "Build //cef:libcef in Chromium's AROS CEF output first."; \
+	    exit 1; \
+	}
+
+%build_module mmake=workbench-libs-cef-blink \
+    modname=cef-blink modtype=library \
+    conffile=cef-blink.conf \
+    files="cef_blink_engine_bridge $(CEF_INTERPOSERS)" \
+    uselibs="$(CEF_BLINK_USELIBS)" \
+    stripdebug=no
+
+$(AROSDIR)/Libs/cef-blink.library: $(CEF_ARCHIVE)
+
+%common

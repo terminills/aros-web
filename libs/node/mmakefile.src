@@ -1,0 +1,365 @@
+#
+# node.library -- native AROS resident Node 22 runtime.
+#
+# Node is first built as the proven static target with bundled V8 and libuv
+# disabled.  This module engulfs Node's own archive and static support
+# archives, while keeping uv1.library, node-v8.library and v8.library external.
+#
+# The Node build itself is reproducible from this directory:
+#   node-fetch                      unpack node-v$(NODEVERSION) from
+#                                   PORTSSOURCEDIR and apply
+#                                   node-v$(NODEVERSION)-aros.diff
+#   workbench-libs-node-configure   node's configure.py, cross, shared
+#                                   uv1/z1, external V8 via node-v8.library
+#   workbench-libs-node-build       libnode.a + node_text_start + snapshot
+#                                   stub through node's own GYP makefiles,
+#                                   with aros-compat/x86_64-aros-{gcc,g++}
+#                                   wrapping $(TARGET_CC)/$(TARGET_CXX)
+#   workbench-libs-node-absl-compat Abseil facilities Node needs that the
+#                                   no-mmap Abseil build compiles out
+#   workbench-libs-node-uv1-abi     lazy thunks for uv_* internals node uses
+#                                   that uv1.library does not export
+#   workbench-libs-node-v8-abi      lazy thunks for every V8/cppgc entry
+#                                   node references, resolved through
+#                                   node-v8.library into v8.library
+#
+# NODE_BUILD_ROOT may be overridden to reuse an existing Node build tree.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+NODEVERSION := 22.23.1
+ARCHBASE := node-v$(NODEVERSION)
+ARCHSUFFIX := "tar.gz"
+
+NODE_PORTSDIR := $(PORTSDIR)/node
+NODE_SRCDIR := $(NODE_PORTSDIR)/node/$(ARCHBASE)
+
+# $(ARCHBASE).tar.gz is staged in PORTSSOURCEDIR.  The diff is rooted at
+# node-v<ver>/ (the tarball's top directory), so it applies with -p1 inside
+# the unpacked tree, the same way workbench/libs/uv applies libuv-aros.diff.
+%fetch mmake=node-fetch archive=$(ARCHBASE) location=$(PORTSSOURCEDIR) \
+    base=$(NODE_PORTSDIR) destination=$(NODE_PORTSDIR)/node suffixes=$(ARCHSUFFIX) \
+    patches_specs=$(ARCHBASE)-aros.diff:$(ARCHBASE):-p1
+
+NODE_BUILD_ROOT ?= $(NODE_SRCDIR)
+NODE_OUT := $(NODE_BUILD_ROOT)/out
+NODE_RELEASE := $(NODE_OUT)/Release
+NODE_OBJ := $(NODE_RELEASE)/obj.target
+NODE_ARCHIVE := $(NODE_OBJ)/libnode.a
+NODE_TEXT_START := $(NODE_OBJ)/node_text_start/src/large_pages/node_text_start.o
+NODE_SNAPSHOT_STUB := $(NODE_OBJ)/node/src/node_snapshot_stub.o
+
+NODE_ABSL_COMPAT_ARCHIVE := $(NODE_OBJ)/node_absl_compat/libnode-absl-compat.a
+NODE_UV1_ABI_ARCHIVE := $(NODE_OBJ)/uv1_abi/libuv1-abi.a
+NODE_V8_ABI_ARCHIVE := $(NODE_OBJ)/node_v8_abi/libnode-v8-abi.a
+
+NODE_SUPPORT_ARCHIVES := \
+    $(NODE_V8_ABI_ARCHIVE) \
+    $(NODE_UV1_ABI_ARCHIVE) \
+    $(NODE_ABSL_COMPAT_ARCHIVE) \
+    $(NODE_OBJ)/deps/histogram/libhistogram.a \
+    $(NODE_OBJ)/deps/llhttp/libllhttp.a \
+    $(NODE_OBJ)/deps/cares/libcares.a \
+    $(NODE_OBJ)/deps/uvwasi/libuvwasi.a \
+    $(NODE_OBJ)/deps/nghttp2/libnghttp2.a \
+    $(NODE_OBJ)/deps/ada/libada.a \
+    $(NODE_OBJ)/deps/simdjson/libsimdjson.a \
+    $(NODE_OBJ)/deps/simdutf/libsimdutf.a \
+    $(NODE_OBJ)/deps/brotli/libbrotli.a \
+    $(NODE_OBJ)/deps/sqlite/libsqlite.a \
+    $(NODE_OBJ)/deps/zstd/libzstd.a \
+    $(NODE_OBJ)/deps/openssl/libopenssl.a \
+    $(NODE_OBJ)/deps/inspector_protocol/libcrdtp.a \
+    $(NODE_OBJ)/deps/ncrypto/libncrypto.a \
+    $(NODE_OBJ)/deps/nbytes/libnbytes.a \
+    $(NODE_OBJ)/tools/v8_gypfiles/libabseil.a
+
+NODE_INPUTS := $(NODE_ARCHIVE) $(NODE_SNAPSHOT_STUB) $(NODE_SUPPORT_ARCHIVES)
+
+#------------------------------------------------------------------------------
+# Cross build of Node's own tree.
+#
+# Node's GYP makefiles look up plain "x86_64-aros-gcc"/"x86_64-aros-g++" on
+# PATH; aros-compat/ provides wrappers that add the AROS-specific flags and
+# forward to the tree's configured cross compiler, so the Node build tracks
+# whatever crosstools this tree was configured with.  Only x86_64 is supported:
+# the ABI thunks below are x86_64 assembly.
+
+NODE_COMPAT_DIR := $(SRCDIR)/$(CURDIR)/include-aros
+NODE_TOOLCHAIN_DIR := $(SRCDIR)/$(CURDIR)/aros-compat
+NODE_NM := $(CROSSTOOLSDIR)/$(AROS_TARGET_CPU)-aros-nm
+NODE_AR := $(CROSSTOOLSDIR)/$(AROS_TARGET_CPU)-aros-ar
+
+NODE_CROSS_ENV := \
+    PATH="$(NODE_TOOLCHAIN_DIR):$$PATH" \
+    NODE_AROS_CC="$(TARGET_CC)" \
+    NODE_AROS_CXX="$(TARGET_CXX)" \
+    NODE_AROS_SDK_INCLUDE="$(AROS_DEVELOPER)/include" \
+    NODE_AROS_COMPAT_DIR="$(NODE_COMPAT_DIR)" \
+    CC=$(AROS_TARGET_CPU)-aros-gcc CXX=$(AROS_TARGET_CPU)-aros-g++ \
+    AR="$(NODE_AR)" \
+    CC.host="$(HOST_CC)" CXX.host="$(HOST_CXX)" \
+    AR.host="$(firstword $(HOST_AR))" LINK.host="$(HOST_CXX)"
+
+# libuv's tarball keeps its libuv-v<ver>/ top directory under the fetch
+# destination (see workbench/libs/uv/make.opt); resolve it in the recipe so a
+# fresh fetch in the same build is seen.
+NODE_UV_INCLUDE_GLOB := $(PORTSDIR)/libuv/libuv/libuv-v*/include
+
+# --without-node-snapshot/--without-node-code-cache: no mksnapshot to run on
+#   the host for a cross target.
+# --without-intl, --openssl-no-asm, --without-npm/--without-corepack/
+#   --without-amaro: first bring-up trims.
+# --shared-node-v8: the configure.py patch in the diff; routes node's V8
+#   deltas through node-v8.library and keeps target sysroot paths off the
+#   host tools.
+NODE_CONFIGURE_FLAGS := \
+    --cross-compiling --dest-cpu=x64 --dest-os=linux \
+    --without-bundled-v8 --shared-node-v8 \
+    --without-node-snapshot --without-node-code-cache \
+    --without-intl --openssl-no-asm \
+    --without-npm --without-corepack --without-amaro \
+    --shared-libuv --shared-libuv-libname=uv1 \
+    --shared-libuv-libpath=$(AROS_DEVELOPER)/lib \
+    --shared-zlib --shared-zlib-libname=z1 \
+    --shared-zlib-includes=$(AROS_DEVELOPER)/include \
+    --shared-zlib-libpath=$(AROS_DEVELOPER)/lib
+
+# node's own sources include proto/node-v8.h (node_config.cc, node_buffer.cc
+# and others), which %build_module generates from node-v8.conf under the
+# node-v8 -includes target. Without it the compile dies with
+#   fatal error: proto/node-v8.h: No such file or directory
+# because workbench-libs-node-v8-abi depends on workbench-libs-node-build, so
+# node-v8 otherwise runs strictly after the compile that needs its header.
+# It must be -includes, not -public-includes: the latter only copies
+# include/*.h into libraries/ and never emits a proto header.
+#MM workbench-libs-node-configure : node-fetch libuv-fetch workbench-libs-uv workbench-libs-z \
+#MM     workbench-libs-node-v8-includes
+workbench-libs-node-configure : $(NODE_OUT)/Makefile
+
+$(NODE_OUT)/Makefile :
+	@$(ECHO) "Configuring $(ARCHBASE) for $(AROS_TARGET_CPU)-aros ..."
+	$(Q)uv_include=$$(ls -d $(NODE_UV_INCLUDE_GLOB) 2>/dev/null | head -n 1); \
+	    test -n "$$uv_include" || { $(ECHO) "libuv headers not fetched below $(PORTSDIR)/libuv"; exit 1; }; \
+	    cd $(NODE_BUILD_ROOT) && env $(NODE_CROSS_ENV) $(PYTHON) configure.py \
+	        $(NODE_CONFIGURE_FLAGS) \
+	        --shared-libuv-includes=$$uv_include
+
+# Only what node.library consumes: the core archive, the deps archives it
+# pulls in, the text-start object and the snapshot stub.  The node executable
+# target is not built; C:Node is workbench/libs/node/test/node_cli.c on top of
+# node.library.
+# Unsetting MAKEFLAGS/MAKEOVERRIDES/TARGET here is load-bearing, not tidiness.
+# mmake invokes us with TARGET=<mmake target> on its command line. Command-line
+# variables beat makefile assignments and propagate to every sub-make, and
+# node's GYP-generated node.target.mk does:
+#     TARGET := node
+#     ... $(obj).target/$(TARGET)/src/node_snapshot_stub.o
+# so the inherited TARGET overrides GYP's own and every object lands in
+# obj.target/workbench-libs-node-build/ instead of obj.target/node/. The stub
+# is then never built at the path the archive step below expects:
+#   make[2]: *** No rule to make target
+#            'Release/obj.target/node/src/node_snapshot_stub.o'.  Stop.
+#
+# Passing MAKEOVERRIDES= on the sub-make command line does NOT fix this - make
+# rebuilds MAKEOVERRIDES from the command-line assignments, so clearing it
+# there is self-defeating. The propagation travels in the environment, so the
+# environment is where it has to be cut. -j is restored explicitly because
+# dropping MAKEFLAGS drops it too. env's options must precede NODE_CROSS_ENV's
+# assignments: env stops parsing options at the first VAR=value.
+#
+# The stub is also asked for by its absolute path via $(NODE_SNAPSHOT_STUB).
+# GYP builds it as $(obj).target/$(TARGET)/... where obj := $(builddir)/obj is
+# absolute, and make matches targets by string - so requesting the relative
+# "Release/obj.target/node/src/node_snapshot_stub.o" matches no rule even
+# though it names the same file.
+#MM workbench-libs-node-build : workbench-libs-node-configure
+workbench-libs-node-build :
+	@$(ECHO) "Building   $(ARCHBASE) (libnode, node_text_start) ..."
+	$(Q)env -u MAKEFLAGS -u MAKEOVERRIDES -u TARGET $(NODE_CROSS_ENV) \
+	    $(MAKE) -C $(NODE_OUT) -j$$(nproc) BUILDTYPE=Release \
+	    libnode node_text_start \
+	    $(NODE_SNAPSHOT_STUB)
+
+#------------------------------------------------------------------------------
+# Generated support archives.
+#
+# Compiles below use the same wrapper toolchain and the libnode target's own
+# flag set, so the objects match what node's GYP build produced.
+
+NODE_TARGET_DEFS := \
+    -D_GLIBCXX_USE_CXX11_ABI=1 -D_FILE_OFFSET_BITS=64 -D__STDC_FORMAT_MACROS \
+    -D__POSIX__ -DNDEBUG -DNODE_WANT_INTERNALS=1 -DNODE_USE_V8_PLATFORM=1 \
+    -DNODE_V8_SHARED_RO_HEAP \
+    -DV8_TARGET_ARCH_X64 -DV8_HAVE_TARGET_OS -DV8_TARGET_OS_LINUX
+NODE_TARGET_CXXFLAGS := \
+    -Wall -Wextra -Wno-unused-parameter -m64 -O3 -fno-omit-frame-pointer \
+    -fno-rtti -fno-exceptions -fno-strict-aliasing -std=gnu++20
+NODE_TARGET_CXX := env $(NODE_CROSS_ENV) $(AROS_TARGET_CPU)-aros-g++ \
+    $(NODE_TARGET_DEFS) $(NODE_TARGET_CXXFLAGS)
+# The generated thunks are preprocessed assembly; the gcc wrapper keeps the
+# C compat header out of .S units.
+NODE_TARGET_AS := env $(NODE_CROSS_ENV) $(AROS_TARGET_CPU)-aros-gcc
+
+# Abseil with ABSL_HAVE_MMAP unset (AROS has no mmap) compiles LowLevelAlloc,
+# GraphCycles, PerThreadSem and CreateThreadIdentity out of libabseil.a, but
+# absl::Mutex still references them.  nodev8abslcompat.cc supplies that
+# surface on the native allocator and pthread; it is Node adapter code and
+# stays out of v8.library.
+NODE_ABSL_COMPAT_SRC := $(SRCDIR)/$(CURDIR)/../node-v8/nodev8abslcompat.cc
+NODE_ABSL_COMPAT_OBJ := $(NODE_OBJ)/node_absl_compat/nodev8abslcompat.o
+# -DABSL_HAVE_MMAP is rejected by current Abseil; the shim sets it after
+# config.h has run. See workbench/libs/node-v8/abslmmapshim.h.
+NODE_ABSL_COMPAT_SHIM := $(SRCDIR)/$(CURDIR)/../node-v8/abslmmapshim.h
+
+#MM workbench-libs-node-absl-compat : workbench-libs-node-build
+workbench-libs-node-absl-compat : $(NODE_ABSL_COMPAT_ARCHIVE)
+
+$(NODE_ABSL_COMPAT_OBJ) : $(NODE_ABSL_COMPAT_SRC) $(NODE_ABSL_COMPAT_SHIM) $(NODE_ARCHIVE)
+	@$(ECHO) "Compiling  $(notdir $<) ..."
+	$(Q)$(MKDIR) $(dir $@)
+	$(Q)$(NODE_TARGET_CXX) \
+	    -I$(NODE_BUILD_ROOT)/deps/v8/third_party/abseil-cpp \
+	    -include $(NODE_ABSL_COMPAT_SHIM) \
+	    -c $< -o $@
+
+$(NODE_ABSL_COMPAT_ARCHIVE) : $(NODE_ABSL_COMPAT_OBJ)
+	@$(ECHO) "Archiving  $(notdir $@) ..."
+	$(Q)$(RM) $@
+	$(Q)$(NODE_AR) rcs $@ $^
+
+# uv1.library exports the public libuv API; Node also calls uv__* internals
+# (uvwasi, its own stream/fs glue).  The generator picks every uv_ symbol Node
+# needs that the uv1 linklib does not export and the library module does
+# define, and emits a lazy thunk that resolves it once through
+# uv_aros_find_internal_symbol().
+NODE_UV1_ABI_STUBS_PY := $(SRCDIR)/$(CURDIR)/../uv/generate-abi-stubs.py
+NODE_UV1_ABI_STUBS_S := $(NODE_OBJ)/uv1_abi/uv1abistubs.S
+NODE_UV1_ABI_STUBS_OBJ := $(NODE_OBJ)/uv1_abi/uv1abistubs.o
+NODE_UV1_LINKLIB := $(AROS_DEVELOPER)/lib/libuv1.a
+NODE_UV1_MODULE := $(AROSDIR)/Libs/uv1.library
+NODE_UV1_NEEDED_ARCHIVES := $(NODE_ARCHIVE) $(NODE_OBJ)/deps/uvwasi/libuvwasi.a
+
+#MM workbench-libs-node-uv1-abi : workbench-libs-node-build workbench-libs-uv
+workbench-libs-node-uv1-abi : $(NODE_UV1_ABI_ARCHIVE)
+
+$(NODE_UV1_ABI_STUBS_S) : $(NODE_UV1_ABI_STUBS_PY) $(NODE_UV1_NEEDED_ARCHIVES) $(NODE_UV1_LINKLIB) $(NODE_UV1_MODULE)
+	@$(ECHO) "Generating $(notdir $@) ..."
+	$(Q)$(PYTHON) $(NODE_UV1_ABI_STUBS_PY) --nm $(NODE_NM) \
+	    $(addprefix --needed-archive ,$(NODE_UV1_NEEDED_ARCHIVES)) \
+	    --link-archive $(NODE_UV1_LINKLIB) \
+	    --library-module $(NODE_UV1_MODULE) \
+	    --output $@
+
+$(NODE_UV1_ABI_STUBS_OBJ) : $(NODE_UV1_ABI_STUBS_S)
+	@$(ECHO) "Assembling $(notdir $<) ..."
+	$(Q)$(NODE_TARGET_AS) -c $< -o $@
+
+$(NODE_UV1_ABI_ARCHIVE) : $(NODE_UV1_ABI_STUBS_OBJ)
+	@$(ECHO) "Archiving  $(notdir $@) ..."
+	$(Q)$(RM) $@
+	$(Q)$(NODE_AR) rcs $@ $^
+
+# Node compiles against its own deps/v8 headers while the engine is the exact
+# Chromium V8 monolith engulfed by v8.library (workbench/libs/v8).  Node's
+# tracing agent subclasses v8::platform::tracing from those headers, so the
+# libplatform tracing sources are compiled from Node's tree and handed to the
+# generator as provided objects; every other V8/cppgc entry Node references
+# that the monolith defines becomes a lazy thunk through
+# NodeV8ResolveEngineSymbol() (workbench/libs/node-v8).
+NODE_V8_ABI_STUBS_PY := $(SRCDIR)/$(CURDIR)/../node-v8/generate-abi-stubs.py
+NODE_V8_ABI_STUBS_S := $(NODE_OBJ)/node_v8_abi/nodev8abistubs.S
+NODE_V8_ABI_STUBS_OBJ := $(NODE_OBJ)/node_v8_abi/nodev8abistubs.o
+NODE_V8_TRACING_SRCDIR := $(NODE_BUILD_ROOT)/deps/v8/src/libplatform/tracing
+NODE_V8_TRACING_FILES := trace-buffer trace-config trace-object trace-writer tracing-controller
+NODE_V8_TRACING_OBJS := $(addprefix $(NODE_OBJ)/node_v8_abi/tracing/,$(addsuffix .o,$(NODE_V8_TRACING_FILES)))
+V8_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library
+NODE_V8_ENGINE_ARCHIVE := $(V8_OUTPUT)/obj/v8/libv8_monolith.a
+
+#MM workbench-libs-node-v8-abi : workbench-libs-node-build workbench-libs-node-absl-compat
+workbench-libs-node-v8-abi : $(NODE_V8_ABI_ARCHIVE)
+
+$(NODE_OBJ)/node_v8_abi/tracing/%.o : $(NODE_V8_TRACING_SRCDIR)/%.cc $(NODE_ARCHIVE)
+	@$(ECHO) "Compiling  $(notdir $<) ..."
+	$(Q)$(MKDIR) $(dir $@)
+	$(Q)$(NODE_TARGET_CXX) \
+	    -I$(NODE_BUILD_ROOT)/deps/v8 -I$(NODE_BUILD_ROOT)/deps/v8/include \
+	    -I$(NODE_BUILD_ROOT)/deps/v8/third_party/abseil-cpp \
+	    -c $< -o $@
+
+$(NODE_V8_ABI_STUBS_S) : $(NODE_V8_ABI_STUBS_PY) $(NODE_ARCHIVE) $(NODE_V8_TRACING_OBJS) $(NODE_ABSL_COMPAT_OBJ) $(NODE_V8_ENGINE_ARCHIVE)
+	@$(ECHO) "Generating $(notdir $@) ..."
+	$(Q)$(PYTHON) $(NODE_V8_ABI_STUBS_PY) --nm $(NODE_NM) \
+	    --node-archive $(NODE_ARCHIVE) \
+	    $(addprefix --needed-object ,$(NODE_V8_TRACING_OBJS)) \
+	    --engine-archive $(NODE_V8_ENGINE_ARCHIVE) \
+	    $(addprefix --provided-object ,$(NODE_V8_TRACING_OBJS) $(NODE_ABSL_COMPAT_OBJ)) \
+	    --output $@
+
+$(NODE_V8_ABI_STUBS_OBJ) : $(NODE_V8_ABI_STUBS_S)
+	@$(ECHO) "Assembling $(notdir $<) ..."
+	$(Q)$(NODE_TARGET_AS) -c $< -o $@
+
+$(NODE_V8_ABI_ARCHIVE) : $(NODE_V8_ABI_STUBS_OBJ) $(NODE_V8_TRACING_OBJS)
+	@$(ECHO) "Archiving  $(notdir $@) ..."
+	$(Q)$(RM) $@
+	$(Q)$(NODE_AR) rcs $@ $^
+
+#------------------------------------------------------------------------------
+# node.library itself.
+
+USER_CXXFLAGS := -std=gnu++20 -fno-pic -fno-PIE \
+    -fno-exceptions -fno-rtti -fno-strict-aliasing
+USER_INCLUDES := -I$(NODE_BUILD_ROOT)/src \
+    -I$(NODE_BUILD_ROOT)/deps/v8/include \
+    -I$(NODE_BUILD_ROOT)/deps/uv/include
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
+    $(NODE_TEXT_START) \
+    $(NODE_SNAPSHOT_STUB) \
+    -Wl,--start-group \
+    -Wl,--whole-archive $(NODE_ARCHIVE) -Wl,--no-whole-archive \
+    $(NODE_SUPPORT_ARCHIVES) \
+    -Wl,--end-group
+
+# posixc, stdc, uv1 and z1 are node.conf rellibs: genmodule appends their
+# _rel linklibs (node_LIBS) after this list, and the AROS driver's trailing
+# -lposixc -lstdcio -lstdc only catch what no _rel archive provides.  Listing
+# the plain archives here would put them before the _rel ones in the link
+# group and hand node.library global bases again (see node.conf).
+NODE_USELIBS := usergroup node-v8 v8 \
+    stdc++ pthread m atomic debug dos exec
+
+NODE_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
+
+#MM workbench-libs-node-public-includes
+%copy_includes mmake=workbench-libs-node-public-includes \
+    path=libraries dir=include/libraries includes=$(NODE_PUBLIC_INCLUDES)
+
+#MM workbench-libs-node-archive-check : workbench-libs-node-build \
+#MM     workbench-libs-node-absl-compat workbench-libs-node-uv1-abi \
+#MM     workbench-libs-node-v8-abi
+workbench-libs-node-archive-check:
+	@test -f "$(NODE_ARCHIVE)" || { \
+	    $(ECHO) "Missing Node archive: $(NODE_ARCHIVE)"; \
+	    $(ECHO) "Build the external-V8/shared-uv Node 22 target first."; \
+	    exit 1; \
+	}
+	@test -f "$(NODE_TEXT_START)" || { \
+	    $(ECHO) "Missing Node text-start object: $(NODE_TEXT_START)"; \
+	    exit 1; \
+	}
+
+#MM workbench-libs-node : workbench-libs-node-archive-check \
+#MM     workbench-libs-node-public-includes workbench-libs-node-v8 \
+#MM     workbench-libs-uv workbench-libs-v8
+%build_module mmake=workbench-libs-node \
+    modname=node modtype=library \
+    conffile=node.conf \
+    cxxfiles=node_bridge \
+    uselibs="$(NODE_USELIBS)"
+
+$(AROSDIR)/Libs/node.library: $(NODE_TEXT_START) $(NODE_INPUTS)
+
+%common

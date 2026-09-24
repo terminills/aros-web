@@ -1,0 +1,64 @@
+#
+# cef.library - stable native AROS facade for Chromium's pinned CEF.
+#
+# CEF and Blink have thousands of callable crossings and hundreds of direct
+# C++ data-object crossings.  Keep that exact-build implementation together in
+# cef-blink.library; this public library remains a small LVO facade so CEF
+# consumers never embed either engine.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+# The CEF build to link against is chosen by the SYSROOT it was compiled for,
+# not by the target: both out dirs are target_os="aros" target_cpu="x64" with
+# the same crosstools, and -adt is the one built against the clean ADT ABIv1
+# sysroot this tree uses - the very sysroot the shipping native Chromium was
+# built with.  cef-blink already defaulted here; these three still pointed at
+# an earlier non-ADT-sysroot build, which is why nothing in this stack had ever been
+# built for pc-x86_64.  Override CEF_OUTPUT to build against another tree.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
+CEF_HEADERS := $(CEF_SOURCE)/cef
+CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
+
+USER_LDFLAGS := -Wl,--no-relax
+CEF_USELIBS := cef-blink debug
+
+#MM workbench-libs-cef-public-includes
+CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
+%copy_includes mmake=workbench-libs-cef-public-includes \
+    path=libraries dir=include/libraries includes=$(CEF_PUBLIC_INCLUDES)
+
+#MM workbench-libs-cef : workbench-libs-cef-public-includes \
+#MM     workbench-libs-cef-blink
+
+%build_module mmake=workbench-libs-cef \
+    modname=cef modtype=library \
+    conffile=cef.conf \
+    files="cef_bridge" \
+    uselibs="$(CEF_USELIBS)"
+
+#MM workbench-libs-cef-test-version : workbench-libs-cef
+%build_prog mmake=workbench-libs-cef-test-version \
+    progname=test_cef_version \
+    files=test_cef_version \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="cef debug"
+
+#MM workbench-libs-cef-test-lifecycle : workbench-libs-cef
+%build_prog mmake=workbench-libs-cef-test-lifecycle \
+    progname=test_cef_lifecycle \
+    files=test_cef_lifecycle \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="cef debug"
+
+#MM workbench-libs-cef-test-browser : workbench-libs-cef
+%build_prog mmake=workbench-libs-cef-test-browser \
+    progname=test_cef_browser \
+    files=test_cef_browser \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="cef v8 cybergraphics graphics intuition dos exec debug"
+
+%common

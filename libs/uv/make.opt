@@ -1,0 +1,30 @@
+LIBUVVERSION := 1.48.0
+ARCHBASE     := libuv
+# The libuv tarball's internal top dir (libuv-v<ver>) is not stripped by %fetch,
+# so point ARCHSRCDIR at the real unpacked location.
+ARCHSRCDIR   := $(PORTSDIR)/libuv/libuv/libuv-v$(LIBUVVERSION)
+
+# libuv core-first (no socket layer yet): satisfy uv/unix.h's network TYPE
+# includes from bsdsocket's headers -- the non-networking core (loop, timer,
+# async, threadpool, fs) references struct sockaddr et al only in declarations,
+# so compiling needs the headers, NOT a socket implementation. pthread.h and
+# semaphore.h come from compiler/pthread.
+# AROS_HAVE_TTY_BACKEND: a terminal emulator exists (consoleng.device behind
+# the CONNG: mount), so uv_guess_handle() reports an interactive console as
+# UV_TTY and node builds a real tty.WriteStream over it (raw mode via termios
+# -> DOS SetMode, TIOCGWINSZ geometry). Without it every console is UV_FILE
+# and an Ink TUI never gets isTTY - see aros-stubs.c uv_guess_handle().
+LIBUV_CPPFLAGS := -D_GNU_SOURCE -DUV_AROS_INTERNAL_BUILD \
+                  -DAROS_HAVE_TTY_BACKEND \
+                  -include $(SRCDIR)/$(CURDIR)/aros-compat.h
+# Port-local headers AROS lacks (poll.h etc) -- must precede the tarball/network
+# include dirs.
+# uv1.library's private per-task base (aros-intbase.h), included by the
+# genmodule start file through uv1.conf's cdefprivate block.
+USER_INCLUDES += -I$(SRCDIR)/$(CURDIR)/src-aros
+USER_INCLUDES += -idirafter $(SRCDIR)/$(CURDIR)/include-aros
+USER_INCLUDES += -idirafter $(ARCHSRCDIR)/include
+USER_INCLUDES += -idirafter $(ARCHSRCDIR)/src
+USER_INCLUDES += -idirafter $(ARCHSRCDIR)/src/unix
+USER_INCLUDES += -idirafter $(SRCDIR)/workbench/network/common/include
+USER_INCLUDES += -idirafter $(SRCDIR)/compiler/pthread

@@ -1,0 +1,4 @@
+# snap the hosted screen while the Claude Code --version output is on the Shell
+30 snap claude-30
+50 snap claude-50
+75 snap claude-75

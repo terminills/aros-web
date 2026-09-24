@@ -1,0 +1,7 @@
+Echo "SPAWN_SMOKE_START"
+Stack 10485760
+SetEnv BROWSER "C:OpenURL"
+C:RunErr SYS:Developer/ClaudeCode/spawn-native.txt C:Node "SYS:Developer/ClaudeCode/spawn-smoke.mjs"
+Echo "NODE_SPAWN_SMOKE_RC=$RC"
+Type SYS:Developer/ClaudeCode/spawn-state.json
+Wait 60

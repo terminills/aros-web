@@ -1,0 +1,12 @@
+Echo "Claude Code 2.1.112 on AROS (clean ADT, consoleng)"
+Echo "Sign in when prompted. This session will remain open."
+Stack 10485760
+SetEnv TERM "xterm-256color"
+SetEnv DISABLE_AUTOUPDATER "1"
+SetEnv BROWSER "C:OpenURL"
+
+C:Node "SYS:Developer/ClaudeCode/claude_aros_bootstrap.mjs"
+
+Echo "Claude Code returned $RC"
+Echo "Keeping this shell open for inspection."
+Wait 3600

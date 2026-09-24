@@ -1,0 +1,229 @@
+#
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+# Makefile for v8.library
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+# Note: We do NOT use -static here because it prevents proper resolution
+# of AROS library base symbols. The AROS build system handles library
+# linking appropriately for modules.
+# USER_LDFLAGS := -static
+
+# For C++ code, use static libstdc++ to avoid runtime dependency
+# Add --no-relax to prevent linker from introducing GOT relocations
+# --wrap intercepts V8 functions that CHECK page alignment or page size —
+# AROS sections aren't page-aligned and C++ static locals may not init correctly
+# Also wraps OS::Abort to gracefully remove tasks instead of crashing system
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
+    -Wl,--wrap=_ZN2v84base2OS15SetDataReadOnlyEPvm \
+    -Wl,--wrap=_ZN2v88internal15MemoryAllocator24InitializeOncePerProcessEv \
+    -Wl,--wrap=_ZN2v84base2OS5AbortEv
+
+# pthread/sem ABI interposers (pthread-abi-aros.c): V8/libc++ are compiled
+# against glibc-sized pthread types (mutex 40B, cond 48B, rwlock 56B, sem 32B);
+# the AROS pthread linklib's types are far larger (inline SignalSemaphore) and
+# its functions overflow the caller's storage, corrupting adjacent members
+# (proven: Isolate::code_pages_buffer1_ clobbered by InitSemaphore NewList).
+# --wrap rewrites every reference (incl. AROS pthread archive members) to the
+# out-of-line shim implementations. Thread lifecycle (create/join/self/key_*)
+# intentionally NOT wrapped - it has no caller-embedded storage.
+USER_LDFLAGS += \
+    -Wl,--wrap=pthread_mutex_init -Wl,--wrap=pthread_mutex_destroy \
+    -Wl,--wrap=pthread_mutex_lock -Wl,--wrap=pthread_mutex_trylock \
+    -Wl,--wrap=pthread_mutex_unlock \
+    -Wl,--wrap=pthread_mutexattr_init -Wl,--wrap=pthread_mutexattr_destroy \
+    -Wl,--wrap=pthread_mutexattr_settype \
+    -Wl,--wrap=pthread_cond_init -Wl,--wrap=pthread_cond_destroy \
+    -Wl,--wrap=pthread_cond_wait -Wl,--wrap=pthread_cond_timedwait \
+    -Wl,--wrap=pthread_cond_clockwait -Wl,--wrap=pthread_cond_signal \
+    -Wl,--wrap=pthread_cond_broadcast \
+    -Wl,--wrap=pthread_condattr_init -Wl,--wrap=pthread_condattr_destroy \
+    -Wl,--wrap=pthread_condattr_setclock \
+    -Wl,--wrap=pthread_rwlock_init -Wl,--wrap=pthread_rwlock_destroy \
+    -Wl,--wrap=pthread_rwlock_rdlock -Wl,--wrap=pthread_rwlock_tryrdlock \
+    -Wl,--wrap=pthread_rwlock_wrlock -Wl,--wrap=pthread_rwlock_trywrlock \
+    -Wl,--wrap=pthread_rwlock_unlock \
+    -Wl,--wrap=pthread_once \
+    -Wl,--wrap=pthread_getattr_np -Wl,--wrap=pthread_attr_getstack \
+    -Wl,--wrap=pthread_attr_init -Wl,--wrap=pthread_attr_destroy \
+    -Wl,--wrap=pthread_attr_setstacksize -Wl,--wrap=pthread_create \
+    -Wl,--wrap=sem_init -Wl,--wrap=sem_destroy -Wl,--wrap=sem_post \
+    -Wl,--wrap=sem_trywait -Wl,--wrap=sem_wait -Wl,--wrap=sem_timedwait
+
+# V8 Engine Configuration
+# Consume the exact monolith extracted from Chromium's pinned V8 checkout.
+# Keep these overridable for builders whose sibling checkout/output names differ.
+V8_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+# out/aros-v8-library-adt: built against this tree's ADT sysroot and
+# crosstools with dcheck_always_on=false.  Chromium's default for a
+# non-official build is dcheck_always_on=true, which v8/BUILD.gn turns into
+# a DEBUG V8 (DCHECKs, the register-allocator verifier, heap verification):
+# a single llhttp TurboFan tier-up took ~7 s on the main task with it.
+V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library-adt
+V8_BUILDDIR := $(V8_OUTPUT)/obj/v8
+V8_INCLUDE := $(V8_SOURCE)/v8/include
+V8_GENERATED_INCLUDE := $(V8_OUTPUT)/gen/v8/include
+V8_LIBDIR := $(GENDIR)/$(CURDIR)/linklibs
+
+# Check if V8 library exists, if not use Phase 2.2 stubs
+ifneq ($(wildcard $(V8_BUILDDIR)/libv8_monolith.a),)
+    # V8 library found - use real V8 engine
+    $(info V8: Using real V8 engine from $(V8_BUILDDIR))
+    V8_USE_REAL_ENGINE := yes
+    
+    # CRITICAL FIX: Force the linker to include the ENTIRE static library.
+    # Without --whole-archive, ld strips the JIT/GC because they aren't explicitly called by the wrapper.
+    USER_LDFLAGS += -L$(V8_LIBDIR) -Wl,--whole-archive -lv8monolith -Wl,--no-whole-archive
+    # The generated stdc link library exposes resident-library entry stubs as
+    # weak archive members, so ordinary -lstdc archive scanning does not pull
+    # them for strong references originating in the engulfed V8 monolith.
+    # Engulf those small stubs explicitly; keep the actual C/math
+    # implementations in the normal stdc.static dependency below.
+    USER_LDFLAGS += -L$(AROS_LIB) -Wl,--whole-archive -lstdc -Wl,--no-whole-archive
+    # USER_LDFLAGS alone does not let build_module discover this nonstandard
+    # archive as an input. Keep the native module timestamp-correct whenever
+    # Chromium's pinned monolith changes.
+    USER_DEPLIBS += $(V8_LIBDIR)/libv8monolith.a
+else
+    # V8 library not found - using Phase 2.2 stubs
+    $(info V8: libv8_monolith.a not found, using Phase 2.2 stubs)
+    V8_USE_REAL_ENGINE := no
+endif
+
+# List of all implementation files
+FUNCS := v8allocatorinstall \
+    v8allocatorisinstalled \
+    v8initialize \
+         v8cleanup \
+         v8createisolate \
+         v8destroyisolate \
+         v8createcontext \
+         v8destroycontext \
+         v8eval \
+         v8compilescript \
+         v8runscript \
+         v8freescript \
+         v8getglobalobject \
+         v8setproperty \
+         v8getproperty \
+         v8callfunction \
+         v8findenginesymbol
+
+# Additional source files
+FILES := v8_init v8_platform v8_simple_eval
+
+# glibc/pthread compatibility interposers proven with the AROS V8 wrapper.
+V8_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/engine
+V8_STUB_FILES := $(V8_ENGINE_DIR)/glibc-stubs-aros \
+                 $(V8_ENGINE_DIR)/emutls-aros \
+                 $(V8_ENGINE_DIR)/platform-context-aros \
+                 $(V8_ENGINE_DIR)/pthread-abi-aros
+
+# V8 Platform integration
+# These sources are owned by v8.library. NexOS was their bring-up playground,
+# not a build input or source of truth.
+V8_PLATFORM_DIR := $(V8_ENGINE_DIR)
+V8_PLATFORM_CXXFILES := $(V8_PLATFORM_DIR)/isolate-aros \
+                        $(V8_PLATFORM_DIR)/memory-aros \
+                        $(V8_PLATFORM_DIR)/platform-aros \
+                        $(V8_PLATFORM_DIR)/threading-aros \
+                        $(V8_PLATFORM_DIR)/v8-embedder \
+                        $(V8_PLATFORM_DIR)/v8-embedder-helpers \
+                        $(V8_PLATFORM_DIR)/v8-platform-backend
+
+# Add C++ compiler flags (C++20 required for V8 12.4+)
+# CRITICAL: Match V8 monolith build flags to prevent GOT relocations
+USER_CFLAGS := -fno-pic -fno-PIE
+USER_CXXFLAGS := -std=c++20 -fno-pic -fno-PIE -I$(V8_ENGINE_DIR)
+USER_INCLUDES := -I$(V8_ENGINE_DIR)
+
+# Add V8 include directories and define V8_USE_REAL_ENGINE when V8 library is available
+ifneq ($(wildcard $(V8_BUILDDIR)/libv8_monolith.a),)
+    USER_INCLUDES += -I$(V8_INCLUDE) -I$(V8_GENERATED_INCLUDE)
+    USER_CXXFLAGS += -DV8_USE_REAL_ENGINE
+    USER_CFLAGS += -DV8_USE_REAL_ENGINE
+endif
+
+# AROS_IMPL: Uses standard AROS mmake build system with C++ support
+# DESIGN: Modular build with separate files per function, links V8 platform
+# INTEGRATION: Links Chromium-pinned V8 with the local AROS platform wrapper
+# REFERENCE: workbench/libs/gallium/mmakefile.src for structure
+
+#MM workbench-libs-v8-includes : \
+#MM     kernel-exec-includes \
+#MM     includes-copy
+
+#MM workbench-libs-v8 : \
+#MM     linklibs \
+#MM     workbench-libs-v8-linklib-v8monolith
+
+# Build linklib wrapper for V8 monolithic library
+# This allows the AROS build system to properly link the large V8 static library
+# Following the pattern used by mesa3dgl.library for handling large external libraries
+ifeq ($(V8_USE_REAL_ENGINE),yes)
+#MM- workbench-libs-v8-linklib-v8monolith : workbench-libs-v8-linklib-v8monolith-real
+# Use pre-built monolith — skip external-v8-build (V8 source build)
+#MM workbench-libs-v8-linklib-v8monolith-real :
+workbench-libs-v8-linklib-v8monolith-real: $(V8_LIBDIR)/libv8monolith.a
+
+$(V8_LIBDIR)/libv8monolith.a: $(V8_BUILDDIR)/libv8_monolith.a
+	@$(ECHO) "Installing V8 monolithic library to $(V8_LIBDIR)..."
+	@$(MKDIR) -p $(V8_LIBDIR)
+	@$(CP) $(V8_BUILDDIR)/libv8_monolith.a $(V8_LIBDIR)/libv8monolith.a
+	@$(ECHO) "V8 monolithic library installed (libv8_monolith.a -> libv8monolith.a for -lv8monolith linker flag)"
+
+V8_USELIBS := stdc++ stdc.static stdcio posixc pthread m atomic debug
+else
+V8_USELIBS := stdc stdcio posixc
+endif
+
+# Stub target is defined as a safety fallback but NOT registered as a MetaMake dependency.
+# Before the fix, there was a conflicting #MM- directive here that caused both the real
+# and stub targets to execute. Now only the real target (line 98) is registered with MetaMake.
+# When V8 is not available, the build will use the stubs-only V8_USELIBS setting above.
+#MM
+workbench-libs-v8-linklib-v8monolith-stub:
+	@$(ECHO) "V8 monolithic library not available - using stubs only"
+
+%build_module mmake=workbench-libs-v8 \
+    modname=v8 modtype=library \
+    conffile=v8.conf \
+    files="$(FILES) $(FUNCS) $(V8_STUB_FILES)" \
+    uselibs="$(V8_USELIBS)" \
+    cxxfiles="v8_bridge std_fix v8_allocator $(V8_PLATFORM_CXXFILES)"
+
+# Copy include files to system includes
+INCLUDE_FILES := $(call WILDCARD, include/*.h)
+
+#MM includes-copy
+%copy_includes path=libraries dir=include
+
+# Test programs
+#MM workbench-libs-v8-test-real : workbench-libs-v8
+# NOTE: V8 requires a large stack (1MB+) - must be set programmatically
+# using StackSwap() as AROS linker doesn't support --stack option
+%build_prog mmake=workbench-libs-v8-test-real \
+    progname=test_v8_real \
+    files=test_v8_real \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="v8"
+
+#MM workbench-libs-v8-test-library : workbench-libs-v8
+%build_prog mmake=workbench-libs-v8-test-library \
+    progname=test_v8_library \
+    files=test_v8_library \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="v8"
+
+#MM workbench-libs-v8-test-symbol : workbench-libs-v8
+%build_prog mmake=workbench-libs-v8-test-symbol \
+    progname=test_v8_symbol \
+    files=test_v8_symbol \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="v8 debug"
+
+#MM workbench-libs-v8-test : workbench-libs-v8-test-library workbench-libs-v8-test-real workbench-libs-v8-test-symbol
+
+%common

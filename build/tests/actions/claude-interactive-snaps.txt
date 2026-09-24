@@ -1,0 +1,8 @@
+# Claude Code interactive TUI in a CONNG: shell on hosted clean ADT
+20 snap claude-i-20
+45 snap claude-i-45
+75 snap claude-i-75
+110 snap claude-i-110
+150 snap claude-i-150
+200 snap claude-i-200
+230 snap claude-i-230

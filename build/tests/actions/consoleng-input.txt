@@ -1,0 +1,9 @@
+# Feed keystrokes to consoleng.device's CMD_READ.
+# The test writes its corpus, calls ActivateWindow() and then blocks in a
+# console read; these arrive well after that. "text" goes through
+# keymap.library MapANSI(), so it is the current keymap's real rawkey pairs
+# rather than hand-picked codes. Newlines are not typed by "text", hence the
+# explicit Return (0x44).
+8 sh SYS:Developer/Chromium/Inject text hello
+10 sh SYS:Developer/Chromium/Inject key 0x44
+14 snap after-input

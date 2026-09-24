@@ -1,0 +1,11 @@
+# <name> <url> - the site sweep for tests/aros-hosted-sites.sh
+google https://www.google.com/
+wikipedia https://en.wikipedia.org/wiki/Amiga
+reddit https://www.reddit.com/
+github https://github.com/aros-development-team/AROS
+amazon https://www.amazon.com/
+bbc https://www.bbc.com/news
+x https://x.com/
+twitch https://www.twitch.tv/
+netflix https://www.netflix.com/
+claude https://claude.ai/

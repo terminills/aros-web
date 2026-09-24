@@ -1,0 +1,62 @@
+#
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+# electron.library -- native compatibility seam above shared CEF and Node.
+#
+# The engines stay external.  This adapter exists so Electron-specific policy
+# can evolve without re-embedding CEF, Node, or V8 into another monolith.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+# The CEF build to link against is chosen by the SYSROOT it was compiled for,
+# not by the target: both out dirs are target_os="aros" target_cpu="x64" with
+# the same crosstools, and -adt is the one built against the clean ADT ABIv1
+# sysroot this tree uses - the very sysroot the shipping native Chromium was
+# built with.  cef-blink already defaulted here; these three still pointed at
+# an earlier non-ADT-sysroot build, which is why nothing in this stack had ever been
+# built for pc-x86_64.  Override CEF_OUTPUT to build against another tree.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
+CEF_HEADERS := $(CEF_SOURCE)/cef
+CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
+
+ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
+
+#MM workbench-libs-electron-public-includes
+%copy_includes mmake=workbench-libs-electron-public-includes \
+    path=libraries dir=include/libraries includes=$(ELECTRON_PUBLIC_INCLUDES)
+
+#MM workbench-libs-electron : workbench-libs-electron-public-includes \
+#MM     workbench-libs-node workbench-libs-cef
+%build_module mmake=workbench-libs-electron \
+    modname=electron modtype=library \
+    conffile=electron.conf \
+    files=electron_bridge \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    uselibs="node cef v8 intuition dos"
+
+#MM workbench-libs-electron-test : workbench-libs-electron
+%build_prog mmake=workbench-libs-electron-test \
+    progname=ElectronLibraryTest \
+    files=test_electron \
+    targetdir=$(AROS_C) \
+    uselibs="electron stdc"
+
+#MM workbench-libs-electron-lifecycle-test : workbench-libs-electron
+%build_prog mmake=workbench-libs-electron-lifecycle-test \
+    progname=ElectronLifecycleTest \
+    files=test_electron_lifecycle \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    targetdir=$(AROS_C) \
+    uselibs="electron v8 debug stdc"
+
+#MM workbench-libs-electron-context-test : workbench-libs-electron
+%build_prog mmake=workbench-libs-electron-context-test \
+    progname=ElectronContextTest \
+    files=test_electron_context \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    targetdir=$(AROS_C) \
+    uselibs="electron debug dos stdc"
+
+%common

@@ -1,0 +1,26 @@
+.key PRIMARYSECS/N,PRIMARYCODE/N,EXTRASECS/N,EXTRACODE/N,SWITCHES/F
+.def PRIMARYSECS 75
+.def PRIMARYCODE 3
+.def EXTRASECS 35
+.def EXTRACODE 7
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; RunExitProbe - two exit-after.js apps in ONE ElectronShell (phase 2): the primary (slot 0) and an extra app each open a window and
+; call app.exit() on their own timer.  Whichever exits first must take only
+; its own window and runtime down; the process ends with the last app and
+; carries the primary's exit code.
+;
+;   Execute RunExitProbe 75 3 35 7    ; extra exits first, primary later
+;   Execute RunExitProbe 35 7 75 3    ; primary exits first, extra keeps going
+; Anything after the four numbers is passed to ElectronShell as extra
+; switches (e.g. --vmodule=aros_window=2 --log-file=SYS:Developer/Chromium/electron.log).
+FailAt 21
+SetEnv HOME RAM:
+SetEnv EXIT_AFTER_SECONDS <PRIMARYSECS>
+SetEnv EXIT_AFTER_CODE <PRIMARYCODE>
+SetEnv EXIT_AFTER_LABEL primary
+SetEnv EXIT_AFTER_EXTRA_SECONDS <EXTRASECS>
+SetEnv EXIT_AFTER_EXTRA_CODE <EXTRACODE>
+SetEnv EXIT_AFTER_EXTRA_LABEL extra
+Echo "RunExitProbe: primary exits <PRIMARYCODE> after <PRIMARYSECS>s, extra exits <EXTRACODE> after <EXTRASECS>s"
+SYS:Tools/ElectronShell --single-process "--main-script=SYS:Developer/ElectronShell/exit-after.js" "--app-script=SYS:Developer/ElectronShell/exit-after.js" <SWITCHES>
+Echo "RunExitProbe: ElectronShell rc=$RC"

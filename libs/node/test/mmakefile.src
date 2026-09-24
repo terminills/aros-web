@@ -1,0 +1,41 @@
+# node.library resident JavaScript and network smoke
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM workbench-libs-node-test : workbench-libs-node
+%build_prog mmake=workbench-libs-node-test \
+    progname=NodeLibraryTest \
+    files=test_node \
+    targetdir=$(AROS_C) \
+    uselibs="node stdc"
+
+#MM workbench-libs-node-cli : workbench-libs-node
+%build_prog mmake=workbench-libs-node-cli \
+    progname=Node \
+    files=node_cli \
+    targetdir=$(AROS_C) \
+    uselibs="node stdc"
+
+#MM workbench-libs-node-npm-cli : workbench-libs-node workbench-libs-node-npm-bootstrap
+%build_prog mmake=workbench-libs-node-npm-cli \
+    progname=npm \
+    files=npm_cli \
+    targetdir=$(AROS_C) \
+    uselibs="node stdc"
+
+%copy_files_q mmake=workbench-libs-node-npm-bootstrap \
+    files=npm_bootstrap.js \
+    dst=$(AROS_S)
+
+#MM workbench-libs-node-git-remote-https : workbench-libs-node workbench-libs-node-git-remote-https-script
+%build_prog mmake=workbench-libs-node-git-remote-https \
+    progname=git-remote-https \
+    files=git_remote_https_cli \
+    targetdir=$(AROS_C) \
+    uselibs="node stdc"
+
+%copy_files_q mmake=workbench-libs-node-git-remote-https-script \
+    files=git_remote_https.js \
+    dst=$(AROS_S)
+
+%common

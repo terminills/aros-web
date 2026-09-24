@@ -1,0 +1,2 @@
+30 snap spawn-30
+70 snap spawn-70

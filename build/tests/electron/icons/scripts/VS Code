@@ -1,0 +1,21 @@
+; Copyright (C) 2026, The AROS Development Team. All rights reserved.
+; Launched by C:IconX from the Workbench icon next to this script.
+FailAt 21
+; ElectronShell runs its main entry on a 16 MiB stack of its own, but the
+; Shell IconX gives us starts at 40 KiB and the launch path runs here first.
+Stack 10485760
+; A writable HOME: the installed system has one on SYS:, a Live CD does not.
+If NOT EXISTS SYS:Home
+  MakeDir SYS:Home >NIL:
+EndIf
+If EXISTS SYS:Home
+  SetEnv HOME "SYS:Home"
+Else
+  SetEnv HOME "RAM:"
+EndIf
+SetEnv PATH "C:"
+SetEnv LOCAL_GIT_DIRECTORY "SYS:Developer/git"
+; VS Code alone on the shared engine.
+Echo "Starting VS Code..."
+SYS:Tools/ElectronShell --single-process "--main-script=SYS:Developer/VSCode/out/main.js" --standard-schemes=vscode-file,vscode-webview --secure-schemes=vscode-file,vscode-webview --cors-schemes=vscode-file,vscode-webview --fetch-schemes=vscode-file,vscode-webview --service-worker-schemes=vscode-webview --force-disable-user-env --enable-features=SharedArrayBuffer
+Echo "VS Code finished, rc=$RC"

@@ -1,0 +1,40 @@
+#
+# ElectronShell -- the visible Electron shell: a BrowserWindow driven by a Node
+# main script (`--main-script=<path>`), or the built-in start page.
+#
+# Opt-in like the rest of the Electron stack in this tree (it pulls
+# electron/node/cef): `make workbench-tools-electronshell`, never part of the
+# default workbench-tools aggregate.
+#
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+# The CEF build to link against is chosen by the SYSROOT it was compiled for,
+# not by the target: both out dirs are target_os="aros" target_cpu="x64" with
+# the same crosstools, and -adt is the one built against the clean ADT ABIv1
+# sysroot this tree uses - the very sysroot the shipping native Chromium was
+# built with.  cef-blink already defaulted here; these three still pointed at
+# an earlier non-ADT-sysroot build, which is why nothing in this stack had ever been
+# built for pc-x86_64.  Override CEF_OUTPUT to build against another tree.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
+CEF_HEADERS := $(CEF_SOURCE)/cef
+CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
+
+#MM workbench-tools-electronshell : workbench-libs-electron workbench-tools-electronshell-tests
+%build_prog mmake=workbench-tools-electronshell \
+    progname=ElectronShell \
+    files=ElectronShell \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    targetdir=$(AROS_TOOLS) \
+    uselibs="electron debug intuition dos stdc"
+
+# Probe apps for the multi-app shell: tiny Electron main scripts
+# that exercise one lifecycle each, installed where RunBoth-style scripts
+# can reach them.
+%copy_files_q mmake=workbench-tools-electronshell-tests \
+    files="exit-after.js RunExitProbe RunBoth two-windows.js" src=tests dst=$(AROS_DEVELOPER)/ElectronShell
+
+%common

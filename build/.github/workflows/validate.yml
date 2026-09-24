@@ -1,0 +1,22 @@
+name: Validate integration pipeline
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate shell scripts
+        run: bash -n scripts/nightly-build.sh tests/hosted-smoke.sh
+      - name: Validate Python scripts
+        run: python3 -m py_compile scripts/write-manifest.py
+      - name: Validate example configuration
+        run: grep -E '^(ADT_REPO|ADT_COMMIT|CHROMIUM_REPO|CHROMIUM_COMMIT|JOBS)=' config/nightly.env.example
+

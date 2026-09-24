@@ -1,0 +1,6 @@
+Echo "UVPROC_START"
+Stack 4194304
+C:UVSpawnDiagTest >SYS:Developer/ClaudeCode/uvproc-out.txt
+Echo "UVPROC_RC=$RC"
+Type SYS:Developer/ClaudeCode/uvproc-out.txt
+Wait 60

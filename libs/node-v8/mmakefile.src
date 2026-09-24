@@ -1,0 +1,30 @@
+#
+# node-v8.library -- Node's compatibility layer over shared v8.library.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+V8_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library
+V8_INCLUDE := $(V8_SOURCE)/v8/include
+V8_GENERATED_INCLUDE := $(V8_OUTPUT)/gen/v8/include
+
+USER_CXXFLAGS := -std=c++20 -fno-pic -fno-PIE -fno-exceptions -fno-rtti
+USER_INCLUDES := -I$(V8_INCLUDE) -I$(V8_GENERATED_INCLUDE)
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax
+
+#MM workbench-libs-node-v8 : workbench-libs-v8
+#MM- workbench-libs-node-v8-includes : workbench-libs-node-v8-public-includes
+#MM workbench-libs-node-v8-public-includes
+
+NODE_V8_PUBLIC_INCLUDES := $(call WILDCARD, include/*.h)
+%copy_includes mmake=workbench-libs-node-v8-public-includes \
+    path=libraries dir=include includes=$(NODE_V8_PUBLIC_INCLUDES)
+
+%build_module mmake=workbench-libs-node-v8 \
+    modname=node-v8 modtype=library \
+    conffile=node-v8.conf \
+    cxxfiles=nodev8backingstore \
+    uselibs="v8 stdc++ stdc posixc"
+
+%common

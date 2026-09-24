@@ -1,0 +1,15 @@
+Echo "OPENURL_REUSE_START"
+SYS:Developer/Chromium/OpenURLSetBrowser Chromium "SYS:Developer/Chromium/chrome --enable-logging --log-file=/SYS/Developer/Chromium/chrome.log --v=1 --user-data-dir=/T/ChromiumProfile *"%u*"" PORT CHROMIUM
+SYS:Developer/Chromium/OpenURLSetBrowser Chromium LIST
+C:OpenURL "https://example.com/"
+Echo "OPENURL1_RC=$RC"
+Wait 45
+C:OpenURL "https://claude.ai/login"
+Echo "OPENURL2_RC=$RC"
+Wait 15
+Stack 10485760
+SetEnv BROWSER "C:OpenURL"
+C:RunErr SYS:Developer/ClaudeCode/spawn-native.txt C:Node "SYS:Developer/ClaudeCode/spawn-smoke.mjs"
+Echo "NODE_SPAWN_SMOKE_RC=$RC"
+Type SYS:Developer/ClaudeCode/spawn-state.json
+Wait 60

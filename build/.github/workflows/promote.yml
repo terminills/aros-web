@@ -1,0 +1,38 @@
+name: Promote verified nightly
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run directory to promote, for example 20260820T033000Z'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    runs-on: [self-hosted, linux, chromium-aros]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify manifest and promote
+        env:
+          RUN_ID: ${{ inputs.run_id }}
+          ARTIFACT_ROOT: /srv/artifacts/chromium-aros
+        run: |
+          set -euo pipefail
+          run="$ARTIFACT_ROOT/runs/$RUN_ID"
+          test -s "$run/manifest.json"
+          test -s "$run/smoke-results.txt" || test -s "$run/tests/smoke-results.txt"
+          python3 - "$run/manifest.json" <<'PY'
+          import json, sys
+          data = json.load(open(sys.argv[1]))
+          tests = data.get("tests", {})
+          required = ("launch", "youtube", "persistence", "exit")
+          missing = [name for name in required if tests.get(name) != "pass"]
+          if missing:
+              raise SystemExit("promotion blocked; tests not passing: " + ",".join(missing))
+          PY
+          ln -sfn "runs/$RUN_ID" "$ARTIFACT_ROOT/nightly/current"
+

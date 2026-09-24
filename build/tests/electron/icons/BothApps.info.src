@@ -1,0 +1,13 @@
+; Workbench icon for SYS:Applications/Development/VS Code + GitHub Desktop.
+;
+; A PROJECT icon, not a TOOL: the thing being started is an AmigaDOS script
+; next to this icon, and C:IconX is what runs a script from Workbench.  A
+; TOOL icon would have to be its own executable, and ElectronShell is one
+; binary shared by every app - it takes the app to run on its command line,
+; which is exactly what the script supplies.
+;
+; (Chromium can use a TOOL icon because the browser itself reads CHROME_ARG
+; tooltypes; ElectronShell has no tooltype reader.)
+TYPE = PROJECT
+DEFAULTTOOL = "C:IconX"
+STACK = 10485760

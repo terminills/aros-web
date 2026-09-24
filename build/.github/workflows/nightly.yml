@@ -1,0 +1,58 @@
+name: Chromium AROS nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 3 * * *'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: chromium-aros-nightly
+  cancel-in-progress: false
+
+jobs:
+  nightly:
+    # The private runner is on the VPN/build server. No public service is
+    # exposed and no source checkout is performed on the runner's host tree.
+    runs-on: [self-hosted, linux, chromium-aros]
+    timeout-minutes: 1440
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Verify runner contract
+        run: |
+          test "$(nproc)" -ge 32
+          test "${JOBS:-32}" -le 32
+          test -x scripts/nightly-build.sh
+        env:
+          JOBS: 32
+      - name: Run pinned nightly build
+        env:
+          CONFIG: /srv/config/chromium-aros/nightly.env
+        run: ./scripts/nightly-build.sh --config "$CONFIG"
+      - name: Publish test summary
+        if: always()
+        run: |
+          set -euo pipefail
+          summary=/srv/artifacts/chromium-aros/runs/*/site-results.tsv
+          echo '## AROS hosted site matrix' >> "$GITHUB_STEP_SUMMARY"
+          if compgen -G "$summary" > /dev/null; then
+            echo '| Site | Status | URL |' >> "$GITHUB_STEP_SUMMARY"
+            echo '| --- | --- | --- |' >> "$GITHUB_STEP_SUMMARY"
+            while IFS=$'\t' read -r name status url; do
+              echo "| $name | $status | $url |" >> "$GITHUB_STEP_SUMMARY"
+            done < "$(ls -t $summary | head -1)"
+          else
+            echo 'No hosted site matrix was produced.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload run evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-aros-nightly-${{ github.run_id }}
+          path: /srv/artifacts/chromium-aros/runs/
+          retention-days: 14

@@ -1,0 +1,2 @@
+30 snap resident-30
+70 snap resident-70

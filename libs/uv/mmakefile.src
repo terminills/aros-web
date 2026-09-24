@@ -1,0 +1,266 @@
+#
+#   Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+#   Generate uv.library -- the libuv async runtime as a shared AROS library.
+#
+#   Core-first port: no POSIX socket layer yet, so this builds libuv's
+#   non-networking core (loop, timer, async, threadpool, fs) with a custom
+#   AROS event-loop backend. Networking (tcp/udp/poll over bsdsocket) is a
+#   later phase. Modeled on workbench/libs/z (zlib -> z.library).
+#
+
+include $(SRCDIR)/config/aros.cfg
+include $(SRCDIR)/$(CURDIR)/make.opt
+
+ARCHSUFFIX := "tar.gz"
+
+# libuv-aros.diff is REQUIRED, not optional: it adds include/uv/aros.h and the
+# __AROS__ branch of include/uv/unix.h that puts aros_timerport/aros_timerio/
+# aros_task/aros_async_sig/aros_task_id into uv_loop_t. Without it a clean
+# fetch compiles vanilla upstream headers and src-aros/aros.c + aros-async.c
+# fail on every one of those fields. Spec form is
+# patch_name[:patch_subdir[:patch_opt]] applied under `destination`; the diff is
+# rooted at libuv-v<ver>/ so it applies with -p1 inside the unpacked dir.
+# patches_origins defaults to $(SRCDIR)/$(CURDIR), which is where the diff lives.
+%fetch mmake=libuv-fetch archive=$(ARCHBASE) destination=$(PORTSDIR)/libuv \
+    location=$(PORTSSOURCEDIR) base=$(PORTSDIR)/libuv destination=$(PORTSDIR)/libuv/libuv suffixes=$(ARCHSUFFIX) \
+    patches_specs=libuv-aros.diff:libuv-v$(LIBUVVERSION):-p1
+
+# uv_os_get_passwd opens credentials.library at runtime; make the generated
+# ABI headers and the native library available in clean/targeted builds.
+#MM- workbench-libs-uv : libuv-fetch workbench-libs-credentials
+
+# First-compile proof: the two most self-contained core files. The full
+# core-first file set (unix/core, loop, async, thread, fs, timer, threadpool,
+# + the custom src/unix/aros.c backend) is added once these compile clean.
+# Core-first timer-loop set (no fs/networking/async yet — those files pull in
+# eventfd/sockets). Symbols from excluded files surface at link and get stubbed.
+FILES := \
+    src/version \
+    src/uv-common \
+    src/uv-data-getter-setters \
+    src/timer \
+    src/fs-poll \
+    src/threadpool \
+    src/thread-common \
+    src/idna \
+    src/inet \
+    src/strscpy \
+    src/strtok \
+    src/unix/core \
+    src/unix/loop \
+    src/unix/loop-watcher \
+    src/unix/posix-hrtime \
+    src/unix/thread \
+    src/unix/fs \
+    src/unix/poll \
+    src/unix/tcp \
+    src/unix/stream \
+    src/unix/udp \
+    src/unix/pipe
+
+USER_CPPFLAGS := $(LIBUV_CPPFLAGS)
+USER_LDFLAGS += -lpthread
+# Route generic close/read/write for socket fds to CloseSocket/recv/send
+# (src-aros/aros-net.c __wrap_*). Non-socket fds fall through to __real_*.
+# aros/features.h mangles every posixc function (POSIXC_MANGLE_FUNCS, so
+# write() is emitted as __posixc_write): the wrap must name the MANGLED
+# symbol or it never matches a reference and libuv's socket I/O silently
+# lands in posixc.library's fd table (EBADF at best, some unrelated open
+# file at worst).  aros-net.c #errors if the mangling ever goes away.
+USER_LDFLAGS += -Wl,--wrap=__posixc_close -Wl,--wrap=__posixc_read \
+                -Wl,--wrap=__posixc_write
+# uv_poll's uv__nonblock_fcntl toggles O_NONBLOCK; route socket fds to
+# IoctlSocket(FIONBIO) via src-aros/aros-net.c __wrap_fcntl.  fcntl() is
+# variadic and declared plain in fcntl.h, so it is NOT mangled.
+USER_LDFLAGS += -Wl,--wrap=fcntl
+
+# AROS glue + custom backend, compiled from the port dir (not the tarball).
+AROSFILES := \
+    $(SRCDIR)/$(CURDIR)/aros-compat \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-async \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-getaddrinfo \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-net \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-net-test \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-dl \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-symbols \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-stubs \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-taskbase
+
+%build_module mmake=workbench-libs-uv \
+  modname=uv1 modtype=library \
+  files="$(addprefix $(ARCHSRCDIR)/,$(FILES)) $(AROSFILES)" \
+  linklibname=uv uselibs="debug"
+
+# First-green runtime smoke: a uv_loop + uv_timer program linking uv.library.
+%build_prog mmake=workbench-libs-uv-timertest \
+    progname=UVTimerTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVTimerTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-timertest : workbench-libs-uv
+
+# Threadpool + async-completion smoke (the exec-Signal wakeup path).
+%build_prog mmake=workbench-libs-uv-worktest \
+    progname=UVWorkTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVWorkTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-worktest : workbench-libs-uv
+
+# Repeated async wakeups against an armed timer: a stale timer-port signal
+# must not turn the next early wake into a full-timeout WaitIO() sleep.
+%build_prog mmake=workbench-libs-uv-asyncwaketest \
+    progname=UVAsyncWakeTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVAsyncWakeTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-asyncwaketest : workbench-libs-uv
+
+# uv_fs file I/O smoke (sync round-trip + async open on the threadpool).
+%build_prog mmake=workbench-libs-uv-fstest \
+    progname=UVFsTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVFsTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-fstest : workbench-libs-uv
+
+# Main-task versus threadpool-worker DOS context and exact VS Code source open.
+%build_prog mmake=workbench-libs-uv-fsworkercontexttest \
+    progname=UVFsWorkerContextTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVFsWorkerContextTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-fsworkercontexttest : workbench-libs-uv
+
+# Threadpool completion must drain even while an idle handle forces poll(0).
+%build_prog mmake=workbench-libs-uv-fspolltest \
+    progname=UVFsPollTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVFsPollTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-fspolltest : workbench-libs-uv
+
+# Real uv_fs_poll/watchFile smoke: mutate a file after polling starts and
+# require a changed-stat callback before the watchdog expires.
+%build_prog mmake=workbench-libs-uv-fswatchfiletest \
+    progname=UVFsWatchFileTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVFsWatchFileTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-fswatchfiletest : workbench-libs-uv
+
+# Native vfork/exec process lifecycle plus DOS PIPE: stdout/stderr capture.
+%build_prog mmake=workbench-libs-uv-processlifecycletest \
+    progname=UVProcessLifecycleTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVProcessLifecycleTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-processlifecycletest : workbench-libs-uv
+
+# Cross-library errno propagation for missing and existing filesystem paths.
+%build_prog mmake=workbench-libs-uv-fserrnotest \
+    progname=UVFsErrnoTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVFsErrnoTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-fserrnotest : workbench-libs-uv
+
+# AROS hostname fallback must not depend on a PosixC wrapper base.
+%build_prog mmake=workbench-libs-uv-hostnametest \
+    progname=UVHostnameTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVHostnameTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-hostnametest : workbench-libs-uv
+
+# AROS HOME fallback smoke used by Node/npm config initialization.
+%build_prog mmake=workbench-libs-uv-hometest \
+    progname=UVHomeTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVHomeTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-hometest : workbench-libs-uv
+
+# Legacy usergroup/MuFS records may omit optional strings; the public libuv
+# passwd contract must return owned, valid strings without dereferencing NULL.
+%build_prog mmake=workbench-libs-uv-passwdtest \
+    progname=UVPasswdTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVPasswdTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-passwdtest : workbench-libs-uv
+
+# Regular files and redirected stdout must classify as UV_FILE.
+%build_prog mmake=workbench-libs-uv-guesstest \
+    progname=UVGuessHandleTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVGuessHandleTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-guesstest : workbench-libs-uv
+
+# Asynchronous DNS must obey libuv callback ordering over AROSTCP.
+%build_prog mmake=workbench-libs-uv-dnstest \
+    progname=UVGetAddrInfoTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVGetAddrInfoTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-dnstest : workbench-libs-uv
+
+# uv_poll readiness smoke over a bsdsocket TCP loopback pair (WaitSelect backend).
+%build_prog mmake=workbench-libs-uv-nettest \
+    progname=UVNetTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVNetTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-nettest : workbench-libs-uv
+
+# uv_tcp + uv_stream loopback echo smoke (high-level handle API over bsdsocket).
+%build_prog mmake=workbench-libs-uv-tcptest \
+    progname=UVTcpTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVTcpTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-tcptest : workbench-libs-uv
+
+# Direct bsdsocket HTTP download throughput discriminator.  It intentionally
+# bypasses libuv and Chromium so hosted TAP/TCP performance can be measured in
+# isolation without writing the response body to disk.
+%build_prog mmake=workbench-libs-uv-httpthroughputtest \
+    progname=UVHttpThroughputTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVHttpThroughputTest \
+    targetdir=$(AROS_C)
+
+#MM- workbench-libs-uv-httpthroughputtest : workbench-libs-uv
+
+# POSIX fd.library HTTP download discriminator.  The optional final "hook"
+# argument calls the registered bsdsocket descriptor hook directly, allowing
+# the posixc dispatch layer and the owner hook to be timed independently.
+%build_prog mmake=workbench-libs-uv-posixfdhttpthroughputtest \
+    progname=PosixFdHttpThroughputTest \
+    files=$(SRCDIR)/$(CURDIR)/test/PosixFdHttpThroughputTest \
+    targetdir=$(AROS_C)
+
+#MM- workbench-libs-uv-posixfdhttpthroughputtest : workbench-libs-uv
+
+# Raw bidirectional bsdsocket TCP discriminator.  Unlike the HTTP test, this
+# gives independent AROS-to-host and host-to-AROS measurements so receive-path
+# loss cannot be mistaken for general TAP or ISP performance.
+%build_prog mmake=workbench-libs-uv-tcpdirectionaltest \
+    progname=UVTcpDirectionalTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVTcpDirectionalTest \
+    targetdir=$(AROS_C)
+
+#MM- workbench-libs-uv-tcpdirectionaltest : workbench-libs-uv
+
+%common
+
+# Spawn bring-up diagnostic: the lifecycle test with every return value
+# printed, run in codex's stdio shape and in node's (READABLE|WRITABLE).
+%build_prog mmake=workbench-libs-uv-spawndiagtest \
+    progname=UVSpawnDiagTest \
+    files=$(SRCDIR)/$(CURDIR)/test/UVSpawnDiagTest \
+    targetdir=$(AROS_C) uselibs="uv1"
+
+#MM- workbench-libs-uv-spawndiagtest : workbench-libs-uv

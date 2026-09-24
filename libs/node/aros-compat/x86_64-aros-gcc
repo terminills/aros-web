@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+#
+#   Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+#   Target C compiler wrapper for the Node 22 cross build.
+#
+#   Node's GYP makefiles call plain "x86_64-aros-gcc"; the mmakefile puts
+#   this directory first on PATH and exports the real compiler and the
+#   build-tree sysroot, so nothing here depends on where a tree lives:
+#
+#     NODE_AROS_CC          the crosstools x86_64-aros-gcc to run
+#     NODE_AROS_SDK_INCLUDE $(AROS_DEVELOPER)/include of the build tree
+#     NODE_AROS_COMPAT_DIR  workbench/libs/node/include-aros
+#
+#   Every target compile gets the large code model (node.library is linked
+#   with --no-relax far from the kickstart), no red zone (AROS interrupt
+#   frames), the posixc/stdc header views node's deps expect to find on a
+#   plain include path, and aros-node-compat.h force-included. -pthread and
+#   ZSTD_MULTITHREAD are dropped: AROS pthread is a library, not a compiler
+#   mode, and zstd's pool.c must not see a threading build.
+
+set -u
+
+: "${NODE_AROS_CC:?NODE_AROS_CC (real x86_64-aros-gcc) is not set}"
+: "${NODE_AROS_SDK_INCLUDE:?NODE_AROS_SDK_INCLUDE is not set}"
+compat_dir="${NODE_AROS_COMPAT_DIR:-$(cd "$(dirname "$0")/../include-aros" && pwd)}"
+
+args=()
+compat_include=(-include "$compat_dir/aros-node-compat.h")
+sqlite_compat=()
+for a in "$@"; do
+    case "$a" in
+        -pthread|-DZSTD_MULTITHREAD) continue ;;
+    esac
+    case "$a" in
+        # Preprocess-only runs are configure.py's compiler probes (version,
+        # macro dump); the compat header must not appear in their output.
+        -E|*.s|*.S) compat_include=() ;;
+        */deps/sqlite/sqlite3.c|../deps/sqlite/sqlite3.c)
+            sqlite_compat=(
+                -include "$compat_dir/aros-node-sqlite-compat.h"
+                -DSQLITE_MAX_MMAP_SIZE=0
+                -DSQLITE_OMIT_LOAD_EXTENSION
+                -DSQLITE_OMIT_WAL
+            )
+            ;;
+    esac
+    args+=("$a")
+done
+
+exec "$NODE_AROS_CC" \
+    -mcmodel=large -mno-red-zone \
+    -I"$compat_dir" -I"$NODE_AROS_SDK_INCLUDE" \
+    -I"$NODE_AROS_SDK_INCLUDE/aros/posixc" -I"$NODE_AROS_SDK_INCLUDE/aros/stdc" \
+    "${sqlite_compat[@]}" "${compat_include[@]}" \
+    -DM_METHOD=3 -DRIO_NOTIFIER_METHOD=1 \
+    -DOPENSSL_NO_DSO -DOPENSSL_NO_DTLS \
+    -DOPENSSL_NO_SECURE_MEMORY -DZSTD_TRACE=0 "${args[@]}"
