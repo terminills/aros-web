@@ -96,6 +96,8 @@ endif
 # List of all implementation files
 FUNCS := v8allocatorinstall \
     v8allocatorisinstalled \
+    v8ownerrangeadd \
+    v8ownerrangeremove \
     v8initialize \
          v8cleanup \
          v8createisolate \
@@ -208,6 +210,13 @@ INCLUDE_FILES := $(call WILDCARD, include/*.h)
 %build_prog mmake=workbench-libs-v8-test-real \
     progname=test_v8_real \
     files=test_v8_real \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="v8"
+
+#MM workbench-libs-v8-test-owner : workbench-libs-v8
+%build_prog mmake=workbench-libs-v8-test-owner \
+    progname=test_v8_owner \
+    files=test_v8_owner \
     ldflags="$(TARGET_LDFLAGS)" \
     uselibs="v8"
 

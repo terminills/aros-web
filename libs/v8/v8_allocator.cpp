@@ -102,10 +102,64 @@ inline void *V8HeapAllocate(size_t size)
     return p;
 }
 
+/*
+ * OWNED RANGES - frees go back to the heap that owns the block.
+ *
+ * AROS has one address space, so a pointer handed from one module to another
+ * - or from one process to another - means the same thing everywhere. What
+ * has to be right is who frees it. An embedder whose heap lives in known
+ * address ranges (PartitionAlloc's pools, in Chromium) registers each range
+ * with the free function that owns it; a pointer inside a registered range is
+ * given back to that function, whatever thread or process is dropping it.
+ * Everything else goes to this library's own allocator as before.
+ *
+ * That is the half the embedder cannot do for us: Chromium's allocator shim
+ * already hands pointers it does not own to stdc's free, but a Blink-allocated
+ * buffer that V8 destroys (a code-cache CachedData, a streaming chunk) reaches
+ * THIS operator delete, which used to free it to stdc and corrupt the TLSF free
+ * list.
+ *
+ * Lookup is lock-free: a slot is published by writing base and free function
+ * first and the size last (release), and retired by clearing the size first,
+ * so a reader either sees a complete range or none. Ranges are keyed by
+ * address, not by caller, so several processes registering their own heaps
+ * at once is fine. Writers are rare (process start and exit) and serialise on
+ * a semaphore.
+ */
+struct OwnedRange
+{
+    IPTR       base;
+    IPTR       size;   /* 0 = slot free; written last on add, first on remove */
+    V8FreeFunc free;
+};
+
+enum { V8_OWNED_RANGES = 32 };
+OwnedRange             g_owned[V8_OWNED_RANGES];
+struct SignalSemaphore g_owned_lock;
+volatile BOOL          g_owned_lock_ready = FALSE;
+
+inline V8FreeFunc OwnerOf(void *ptr)
+{
+    const IPTR p = (IPTR)ptr;
+    for (int i = 0; i < V8_OWNED_RANGES; i++)
+    {
+        const IPTR size = __atomic_load_n(&g_owned[i].size, __ATOMIC_ACQUIRE);
+        if (size != 0 && p - g_owned[i].base < size)
+            return g_owned[i].free;
+    }
+    return nullptr;
+}
+
 inline void V8HeapRelease(void *ptr)
 {
     if (ptr == nullptr)
         return;
+
+    if (V8FreeFunc owner = OwnerOf(ptr))
+    {
+        owner(ptr);
+        return;
+    }
 
     /* Deliberately NOT gated on g_allocator_used: a free can only reach here
        after an allocation, and setting the flag on the free path would hide an
@@ -158,6 +212,98 @@ extern "C" BOOL V8AllocatorInstallImpl(V8AllocFunc allocFn, V8FreeFunc freeFn)
 extern "C" BOOL V8AllocatorIsInstalledImpl(void)
 {
     return g_allocator_installed;
+}
+
+/* Called once from the library's init (V8_InitLib), which runs single-threaded
+   before any caller can reach the range functions. Not done lazily: Forbid()
+   is per-CPU on SMP and would not serialise two first callers on different
+   cores. */
+extern "C" void V8OwnerRangesInitImpl(void)
+{
+    InitSemaphore(&g_owned_lock);
+    g_owned_lock_ready = TRUE;
+}
+
+static inline BOOL OwnedLockInit(void)
+{
+    return g_owned_lock_ready;
+}
+
+/*****************************************************************************
+
+    Register [base, base+size) as owned by freeFn. Returns FALSE if the range
+    is empty, overlaps a registered range, or the table is full.
+
+*****************************************************************************/
+extern "C" BOOL V8OwnerRangeAddImpl(APTR base, IPTR size, V8FreeFunc freeFn)
+{
+    if (base == nullptr || size == 0 || freeFn == nullptr)
+        return FALSE;
+
+    if (!OwnedLockInit())
+        return FALSE;
+    ObtainSemaphore(&g_owned_lock);
+
+    const IPTR lo = (IPTR)base;
+    const IPTR hi = lo + size;
+    int slot = -1;
+    for (int i = 0; i < V8_OWNED_RANGES; i++)
+    {
+        const IPTR s = g_owned[i].size;
+        if (s == 0)
+        {
+            if (slot < 0)
+                slot = i;
+            continue;
+        }
+        if (lo < g_owned[i].base + s && g_owned[i].base < hi)
+        {
+            ReleaseSemaphore(&g_owned_lock);
+            return FALSE;       /* overlaps a range someone else owns */
+        }
+    }
+    if (slot < 0)
+    {
+        ReleaseSemaphore(&g_owned_lock);
+        return FALSE;
+    }
+
+    g_owned[slot].base = lo;
+    g_owned[slot].free = freeFn;
+    __atomic_store_n(&g_owned[slot].size, size, __ATOMIC_RELEASE);
+
+    ReleaseSemaphore(&g_owned_lock);
+    return TRUE;
+}
+
+/*****************************************************************************
+
+    Retire the range starting at base. Call it when the heap that owns it is
+    about to go away (process exit), after the last pointer from it has been
+    released. Returns FALSE if no range starts at base.
+
+*****************************************************************************/
+extern "C" BOOL V8OwnerRangeRemoveImpl(APTR base)
+{
+    if (!OwnedLockInit())
+        return FALSE;
+    ObtainSemaphore(&g_owned_lock);
+
+    BOOL found = FALSE;
+    for (int i = 0; i < V8_OWNED_RANGES; i++)
+    {
+        if (g_owned[i].size != 0 && g_owned[i].base == (IPTR)base)
+        {
+            __atomic_store_n(&g_owned[i].size, (IPTR)0, __ATOMIC_RELEASE);
+            g_owned[i].free = nullptr;
+            g_owned[i].base = 0;
+            found = TRUE;
+            break;
+        }
+    }
+
+    ReleaseSemaphore(&g_owned_lock);
+    return found;
 }
 
 /*

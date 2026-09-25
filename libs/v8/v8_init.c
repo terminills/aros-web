@@ -9,6 +9,7 @@
 
 #include LC_LIBDEFS_FILE
 #include "v8_intern.h"
+#include "v8_allocator.h"
 
 /* V8_INITIALIZATION
  * AROS_IMPL: Uses ADD2INITLIB/ADD2EXPUNGELIB symbolsets
@@ -28,6 +29,9 @@ static int V8_InitLib(LIBBASETYPEPTR V8Base)
 {
     /* Initialize the library base semaphore */
     InitSemaphore(&V8Base->v8_Semaphore);
+
+    /* The owned-range table's lock; see v8_allocator.cpp. */
+    V8OwnerRangesInitImpl();
     
     /* Initialize isolate list */
     NEWLIST(&V8Base->v8_Isolates);
