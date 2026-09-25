@@ -274,7 +274,8 @@ NODE_V8_ABI_STUBS_OBJ := $(NODE_OBJ)/node_v8_abi/nodev8abistubs.o
 NODE_V8_TRACING_SRCDIR := $(NODE_BUILD_ROOT)/deps/v8/src/libplatform/tracing
 NODE_V8_TRACING_FILES := trace-buffer trace-config trace-object trace-writer tracing-controller
 NODE_V8_TRACING_OBJS := $(addprefix $(NODE_OBJ)/node_v8_abi/tracing/,$(addsuffix .o,$(NODE_V8_TRACING_FILES)))
-V8_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
+V8_SOURCE ?= $(CHROMIUM_SRC)
 V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library
 NODE_V8_ENGINE_ARCHIVE := $(V8_OUTPUT)/obj/v8/libv8_monolith.a
 

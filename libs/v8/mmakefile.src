@@ -55,7 +55,8 @@ USER_LDFLAGS += \
 # V8 Engine Configuration
 # Consume the exact monolith extracted from Chromium's pinned V8 checkout.
 # Keep these overridable for builders whose sibling checkout/output names differ.
-V8_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
+V8_SOURCE ?= $(CHROMIUM_SRC)
 # out/aros-v8-library-adt: built against this tree's ADT sysroot and
 # crosstools with dcheck_always_on=false.  Chromium's default for a
 # non-official build is dcheck_always_on=true, which v8/BUILD.gn turns into

@@ -11,7 +11,8 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
+CEF_SOURCE ?= $(CHROMIUM_SRC)
 # The CEF build to link against is chosen by the SYSROOT it was compiled for,
 # not by the target: both out dirs are target_os="aros" target_cpu="x64" with
 # the same crosstools, and -adt is the one built against the clean ADT ABIv1

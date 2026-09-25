@@ -8,7 +8,8 @@
 
 include $(SRCDIR)/config/aros.cfg
 
-CEF_SOURCE ?= $(SRCDIR)/../chromium-aros/src
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
+CEF_SOURCE ?= $(CHROMIUM_SRC)
 # out/aros-cef-bootstrap is built against an earlier, non-ADT sysroot
 # with that tree's own crosstools, so its
 # libcef.a is not a valid artifact for this tree: linking it here mixes two
