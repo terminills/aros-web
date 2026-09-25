@@ -443,17 +443,6 @@ int __printf_chk(int flag, const char* format, ...) {
 }
 
 /*
- * pthread_condattr_setclock - Set clock for condition variable
- * Stub implementation
- */
-int pthread_condattr_setclock(void* attr, int clock_id) {
-    /* Stub: pthread_condattr_setclock not fully supported */
-    (void)attr;
-    (void)clock_id;
-    return 0;
-}
-
-/*
  * pthread_cond_clockwait - Wait on condition variable with clock
  * Stub implementation - fallback to regular wait
  */
