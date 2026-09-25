@@ -1,0 +1,49 @@
+
+include $(SRCDIR)/config/aros.cfg
+
+# consoleng.device -- a SECOND console device, alongside the stock
+# rom/devs/console, which this does not modify, replace or wrap.
+#
+# It carries an earlier tree's terminal work (escape sequences reassembled across
+# writes, CSI semantics preserved through UTF-8 input, deferred autowrap,
+# modern redraw controls, UCS-4 charmap cells, OSC 0/2 titles). That is what
+# made the Claude Code Ink TUI work there, and Ink is what the agentic CLI
+# needs.
+#
+# Why a separate device rather than an upgrade in place: console.device is
+# load-bearing for the Shell, every CLI tool, Startup-Sequence and the demo
+# path. Landing ~2300 lines of behaviour change in it makes any single defect a
+# total-boot regression with nothing to fall back on, and makes A/B impossible.
+# Two devices means this one can be wrong without taking the system down, and
+# the comparison is a device name instead of a rebuild.
+#
+# Consequences of that choice, all deliberate:
+#   * NO %copy_includes here. The stock console owns the public
+#     devices/console.h; this device keeps its extra command (CD_ASKTITLE) in
+#     include/consoleng.h and includes it directly from console.c.
+#   * No residentpri. The stock console is kickstart-resident because the
+#     system cannot boot without it; this one is an on-disk DEVS: device loaded
+#     on demand, so it costs nothing at boot and nothing in the kickstart.
+#   * libbase/libbasetype are left as ConsoleDevice/struct ConsoleBase. Those
+#     are internal to a module, so there is no clash with the stock device and
+#     no source edits are needed to rename them.
+
+FILES	:=  support consoleclass stdconclass charmapconclass rendezvous charmap snipmapconclass consoletask consolengtext consolengglyph
+FUNCS	:=  cdinputhandler rawkeyconvert setconsnip getconsnip addconsniphook remconsniphook
+
+#MM- workbench-devs-complete : workbench-devs-consoleng
+#MM workbench-devs-consoleng : includes linklibs
+
+USER_CPPFLAGS := \
+               -DUSE_EXEC_DEBUG \
+               -D__GRAPHICS_NOLIBBASE__ \
+               -D__INTUITION_NOLIBBASE__ \
+               -D__KEYMAP_NOLIBBASE__ \
+               -D__UTILITY_NOLIBBASE__
+USER_CPPFLAGS += \
+               -DINTUITION_INLINE_NEWOBJECT
+USER_LDFLAGS := -static
+
+%build_module mmake=workbench-devs-consoleng \
+  modname=consoleng modtype=device \
+  files="console $(FUNCS) $(FILES)"
