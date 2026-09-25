@@ -50,11 +50,6 @@ long pwritev(int fd, const struct iovec *iov, int iovcnt, long offset);
 long readv(int fd, const struct iovec *iov, int iovcnt);
 long writev(int fd, const struct iovec *iov, int iovcnt);
 
-/* AROS libpthread lacks pthread_condattr_setclock(). libuv uses it only to
-   request a monotonic condvar clock; no-op for core-first (condvars use the
-   default clock). Revisit if timed-wait drift matters. */
-#define pthread_condattr_setclock(attr, clockid) (0)
-
 /* AROS libpthread lacks pthread_atfork(). libuv registers a threadpool
    reset-after-fork handler; core-first does not fork, so no-op. */
 #define pthread_atfork(prepare, parent, child) (0)
