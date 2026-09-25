@@ -16,6 +16,10 @@
 
 #include <proto/exec.h>
 #include <proto/v8.h>
+
+/* Opened here rather than linked: uselibs=v8 would pull in the whole engine
+   archive, not just the library calls. */
+struct Library *V8Base;
 #include <stdio.h>
 #include <string.h>
 
@@ -43,12 +47,25 @@ static void check(int ok, const char *what)
 
 int main(void)
 {
+    V8Base = OpenLibrary((CONST_STRPTR)"v8.library", 1);
+    if (V8Base == NULL || V8Base->lib_Version < 1
+        || (V8Base->lib_Version == 1 && V8Base->lib_Revision < 1))
+    {
+        printf("OWNER: FAIL v8.library 1.1 not available\n");
+        if (V8Base)
+            CloseLibrary(V8Base);
+        return 20;
+    }
+
     DeleteFn v8_delete = (DeleteFn)V8FindEngineSymbol((CONST_STRPTR)"_ZdlPv");
     NewFn    v8_new    = (NewFn)V8FindEngineSymbol((CONST_STRPTR)"_Znwm");
 
     check(v8_delete != NULL && v8_new != NULL, "engine operator new/delete found");
     if (v8_delete == NULL || v8_new == NULL)
+    {
+        CloseLibrary(V8Base);
         return 20;
+    }
 
     check(V8OwnerRangeAdd(arena, sizeof(arena), (APTR)ArenaFree), "arena range registered");
     check(!V8OwnerRangeAdd(arena + 100, 16, (APTR)ArenaFree), "overlapping range refused");
@@ -82,5 +99,6 @@ int main(void)
     V8OwnerRangeRemove(arena);
 
     printf("OWNER: done failures=%d\n", failures);
+    CloseLibrary(V8Base);
     return failures ? 10 : 0;
 }
