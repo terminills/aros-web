@@ -213,11 +213,6 @@ INCLUDE_FILES := $(call WILDCARD, include/*.h)
     ldflags="$(TARGET_LDFLAGS)" \
     uselibs="v8"
 
-#MM workbench-libs-v8-test-owner : workbench-libs-v8
-%build_prog mmake=workbench-libs-v8-test-owner \
-    progname=test_v8_owner \
-    files=test_v8_owner
-
 #MM workbench-libs-v8-test-library : workbench-libs-v8
 %build_prog mmake=workbench-libs-v8-test-library \
     progname=test_v8_library \

@@ -1,0 +1,15 @@
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+# v8.library tests that only CALL the library. Kept apart from the library's
+# own makefile, whose link flags pull the whole V8 engine archive into every
+# program built there.
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM workbench-libs-v8-test-owner : workbench-libs-v8
+%build_prog mmake=workbench-libs-v8-test-owner \
+    progname=test_v8_owner \
+    files=test_v8_owner \
+    targetdir=$(AROS_TESTS)/v8
+
+%common
