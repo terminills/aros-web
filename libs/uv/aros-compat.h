@@ -50,12 +50,19 @@ long pwritev(int fd, const struct iovec *iov, int iovcnt, long offset);
 long readv(int fd, const struct iovec *iov, int iovcnt);
 long writev(int fd, const struct iovec *iov, int iovcnt);
 
-/* AROS libpthread lacks pthread_atfork(). libuv registers a threadpool
-   reset-after-fork handler; core-first does not fork, so no-op. */
-#define pthread_atfork(prepare, parent, child) (0)
+/* libuv registers a threadpool reset-after-fork handler. AROS libpthread has
+   no pthread_atfork() yet (and AROS does not fork); aros-compat.c provides a
+   weak no-op, which a real one in the SDK replaces without any change here.
+   The prototype is POSIX's, so an SDK declaration will agree with it. */
+int pthread_atfork(void (*prepare)(void), void (*parent)(void),
+                   void (*child)(void));
 
-/* sysconf() constant AROS lacks (glibc value); posixc sysconf returns -1 for
-   it, which libuv tolerates by falling back to a 1-CPU count. */
+/* sysconf() constant older SDKs lack (glibc value; posixc sysconf returns -1
+   for it and libuv falls back to a 1-CPU count). This header is force-included
+   ahead of everything, so read <unistd.h> first: testing the name before it
+   is seen would define it here and turn the SDK's own declaration into a
+   number. */
+#include <unistd.h>
 #ifndef _SC_NPROCESSORS_ONLN
 #define _SC_NPROCESSORS_ONLN 84
 #endif

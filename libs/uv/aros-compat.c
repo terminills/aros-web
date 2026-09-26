@@ -143,3 +143,14 @@ void freeifaddrs(struct ifaddrs *ifa)
    the header's own initializer macro. */
 #include <netinet/in.h>
 const struct in6_addr in6addr_any = IN6ADDR_ANY_INIT;
+
+/* Weak: a pthread_atfork() in the SDK takes precedence (see aros-compat.h). */
+__attribute__((weak)) int pthread_atfork(void (*prepare)(void),
+                                         void (*parent)(void),
+                                         void (*child)(void))
+{
+    (void)prepare;
+    (void)parent;
+    (void)child;
+    return 0;
+}
