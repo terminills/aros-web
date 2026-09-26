@@ -21,6 +21,16 @@ USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
     -Wl,--wrap=_ZN2v88internal15MemoryAllocator24InitializeOncePerProcessEv \
     -Wl,--wrap=_ZN2v84base2OS5AbortEv
 
+# glibc-ABI functions glibc-stubs-aros.c provides for the monolith under
+# names the AROS SDK defines as well: wrapped, so the SDK's own definitions
+# never collide with them (as pthread_condattr_setclock did once libpthread
+# gained one) while V8's references still reach the glibc-ABI versions.
+USER_LDFLAGS += \
+    -Wl,--wrap=clock_gettime -Wl,--wrap=gettimeofday \
+    -Wl,--wrap=getentropy -Wl,--wrap=sysconf \
+    -Wl,--wrap=pread -Wl,--wrap=ftruncate64 \
+    -Wl,--wrap=pthread_sigmask
+
 # pthread/sem ABI interposers (pthread-abi-aros.c): V8/libc++ are compiled
 # against glibc-sized pthread types (mutex 40B, cond 48B, rwlock 56B, sem 32B);
 # the AROS pthread linklib's types are far larger (inline SignalSemaphore) and

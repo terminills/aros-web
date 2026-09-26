@@ -146,7 +146,7 @@ static volatile ULONG v8_fake_clock = 0;  /* fallback tick counter */
 typedef struct { long long tv_sec; long long tv_nsec; } glibc_timespec;
 typedef struct { LONG tv_sec; LONG tv_usec; } aros_timeval_payload;
 
-int clock_gettime(clockid_t clk_id, struct timespec *tp) {
+int __wrap_clock_gettime(clockid_t clk_id, struct timespec *tp) {
     struct Library *TimerBase = v8_TimerBase;
     glibc_timespec *gtp = (glibc_timespec *)tp;
 
@@ -215,7 +215,7 @@ int clock_gettime(clockid_t clk_id, struct timespec *tp) {
 /*
  * gettimeofday — same per-task-lib bypass for worker threads.
  */
-int gettimeofday(struct timeval *tv, void *tz) {
+int __wrap_gettimeofday(struct timeval *tv, void *tz) {
     struct Library *TimerBase = v8_TimerBase;
     aros_timeval_payload *atv_payload = (aros_timeval_payload *)tv;
     (void)tz;
@@ -344,7 +344,7 @@ unsigned long getauxval(unsigned long type) {
  * V8 may use this for security-sensitive operations. A proper implementation
  * should use a hardware random source or AROS's secure random API if available.
  */
-int getentropy(void* buffer, size_t length) {
+int __wrap_getentropy(void* buffer, size_t length) {
     /* Stub: use simple pseudo-random (NOT SECURE) */
     unsigned char* buf = (unsigned char*)buffer;
     size_t i;
@@ -472,7 +472,7 @@ int __pthread_key_create(void* key, void (*destructor)(void*)) {
  * pthread_sigmask - Set signal mask
  * Stub implementation
  */
-int pthread_sigmask(int how, const void* set, void* oldset) {
+int __wrap_pthread_sigmask(int how, const void* set, void* oldset) {
     /* Stub: pthread_sigmask not supported */
     (void)how;
     (void)set;
@@ -643,7 +643,7 @@ int pkey_mprotect(void* addr, size_t len, int prot, int pkey) {
  * Redirect to AROS equivalents where possible
  */
 extern int ftruncate(int fd, long length);
-int ftruncate64(int fd, long long length) {
+int __wrap_ftruncate64(int fd, long long length) {
     /* Check if value fits in long before truncation */
     if (length > LONG_MAX || length < LONG_MIN) {
         _aros_errno = EOVERFLOW;
@@ -814,7 +814,7 @@ int open64(const char* pathname, int flags, ...) {
 extern off_t lseek(int fd, off_t offset, int whence);
 extern ssize_t read(int fd, void* buf, size_t count);
 
-ssize_t pread(int fd, void* buf, size_t count, long offset) {
+ssize_t __wrap_pread(int fd, void* buf, size_t count, long offset) {
     /* Save current position */
     off_t old_pos = lseek(fd, 0, SEEK_CUR);
     if (old_pos == (off_t)-1) {
@@ -1026,7 +1026,7 @@ void __wrap__ZN2v84base2OS5AbortEv(void) {
  *   _SC_NPROCESSORS_CONF=83, _SC_NPROCESSORS_ONLN=84
  * AROS _SC_ values:   _SC_ARG_MAX=19, _SC_PAGESIZE=54
  */
-long sysconf(int name) {
+long __wrap_sysconf(int name) {
     switch (name) {
         /* Linux _SC_PAGESIZE / _SC_PAGE_SIZE */
         case 30:
