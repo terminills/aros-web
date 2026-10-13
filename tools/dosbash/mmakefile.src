@@ -1,0 +1,17 @@
+#
+# dosbash -- the AmigaDOS shell in bash's place for programs that run their
+# commands through `bash -c` (Claude Code's Bash tool).
+#
+# Copyright (C) 2026, The AROS Development Team. All rights reserved.
+#
+
+include $(SRCDIR)/config/aros.cfg
+
+#MM- workbench-tools : workbench-tools-dosbash
+
+%build_prog mmake=workbench-tools-dosbash \
+    progname=dosbash \
+    files=dosbash \
+    targetdir=$(AROS_C)
+
+%common
