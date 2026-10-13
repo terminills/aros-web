@@ -778,6 +778,68 @@ static VOID charmap_erase_display(Class *cl, Object *o, ULONG x, ULONG y,
     }
 }
 
+/* The pens a dynamic colour change (OSC 4/10/11/...) can move: the default
+   foreground and background, the eight legacy ANSI slots and xterm 0-15 */
+#define CHARMAP_COLORPENS (2 + 8 + 16)
+
+static VOID charmapcon_colorpens(Object *o, UBYTE *pens)
+{
+    WORD i;
+
+    Console_GetColorPen(o, CONUNIT_PEN_DEFFG, &pens[0]);
+    Console_GetColorPen(o, CONUNIT_PEN_DEFBG, &pens[1]);
+    for (i = 0; i < 8; i++)
+        Console_GetColorPen(o, i, &pens[2 + i]);
+    for (i = 0; i < 16; i++)
+        Console_GetColorPen(o, CONPEN_XTERM(i), &pens[10 + i]);
+}
+
+/* Cells keep pen numbers, so text already on screen and in the scrollback
+   is moved to the new pens and repainted, as xterm does. */
+static VOID charmapcon_setcolor(Class *cl, Object *o,
+    struct P_Console_DoCommand *msg)
+{
+    struct charmapcondata *data = INST_DATA(cl, o);
+    UBYTE before[CHARMAP_COLORPENS], after[CHARMAP_COLORPENS];
+    UBYTE map[256];
+    BOOL changed = FALSE;
+    struct charmap_line *line;
+    WORD i;
+
+    charmapcon_colorpens(o, before);
+    DoSuperMethodA(cl, o, (Msg) msg);
+    charmapcon_colorpens(o, after);
+
+    for (i = 0; i < 256; i++)
+        map[i] = (UBYTE) i;
+    for (i = 0; i < CHARMAP_COLORPENS; i++)
+    {
+        if (before[i] != after[i])
+        {
+            map[before[i]] = after[i];
+            changed = TRUE;
+        }
+    }
+    if (!changed)
+        return;
+
+    for (line = data->top_of_scrollback; line; line = line->next)
+    {
+        ULONG x;
+
+        if (!line->fgpen || !line->bgpen)
+            continue;
+        for (x = 0; x < line->size; x++)
+        {
+            line->fgpen[x] = (BYTE) map[(UBYTE) line->fgpen[x]];
+            line->bgpen[x] = (BYTE) map[(UBYTE) line->bgpen[x]];
+        }
+    }
+
+    if (!CON_IS_OBSCURED(o))
+        charmapcon_refresh(cl, o, 0);
+}
+
 static VOID charmapcon_docommand(Class *cl, Object *o,
     struct P_Console_DoCommand *msg)
 {
@@ -927,6 +989,10 @@ static VOID charmapcon_docommand(Class *cl, Object *o,
             DoSuperMethodA(cl, o, (Msg) msg);
             break;
         }
+
+    case C_SET_COLOR:
+        charmapcon_setcolor(cl, o, msg);
+        break;
 
     default:
         DoSuperMethodA(cl, o, (Msg) msg);

@@ -282,7 +282,13 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
 
     if (done)
     {
+        BOOL st = (icu->oscState == OSC_GOT_ESC);
+        ULONG code = 0;
+        WORD n = 0;
+
         icu->oscBuf[icu->oscLen] = '\0';
+        while (n < 4 && icu->oscBuf[n] >= '0' && icu->oscBuf[n] <= '9')
+            code = code * 10 + (icu->oscBuf[n++] - '0');
 
         /* OSC 0/2: set window/tab title (xterm) */
         if (icu->oscState != OSC_OVERFLOW && icu->oscLen > 1 &&
@@ -317,6 +323,17 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
                 p_tab[0] = (IPTR) name;
                 p_tab[1] = size;
             }
+        }
+        else if (icu->oscState != OSC_OVERFLOW && n > 0 &&
+            (icu->oscBuf[n] == ';' || icu->oscBuf[n] == '\0') &&
+            (code == 4 || code == 10 || code == 11 || code == 104 ||
+             code == 110 || code == 111))
+        {
+            *cmd_ptr = C_SET_COLOR;
+            *numparams_ptr = 3;
+            p_tab[0] = code;
+            p_tab[1] = (IPTR) (icu->oscBuf + n + (icu->oscBuf[n] ? 1 : 0));
+            p_tab[2] = st;
         }
         icu->oscState = OSC_IDLE;
         icu->oscLen = 0;

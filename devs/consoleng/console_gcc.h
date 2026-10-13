@@ -164,6 +164,8 @@ enum
 
     C_SET_FONT,                 /* OSC 50: params = name ptr, ysize */
     C_SET_TITLE,                /* OSC 0/2: params = title ptr */
+    C_SET_COLOR,                /* OSC 4/10/11/104/110/111: params = code,
+                                   spec ptr, ST-terminated */
 
     C_SET_OBSCURED,             /* tab hidden: state only, no rendering */
     C_RESET_OBSCURED,           /* tab shown: full refresh from cells */
@@ -222,7 +224,7 @@ struct intConUnit
     UBYTE unitTitle[CON_TITLE_SIZE];
 
     /* OSC (ESC ]) string accumulation - OSC 50 = live font switch */
-#define CON_OSCBUF_SIZE 80
+#define CON_OSCBUF_SIZE 256
 #define OSC_IDLE     0
 #define OSC_COLLECT  1
 #define OSC_OVERFLOW 2

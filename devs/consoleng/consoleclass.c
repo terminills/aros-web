@@ -401,13 +401,30 @@ static VOID console_docommand(Class *cl, Object *o,
         /* OSC 0/2: remember the title; the active (visible) unit also
            drives the window title, GNOME-terminal style */
         {
-            STRPTR t = (STRPTR) msg->Params[0];
+            const UBYTE *t = (const UBYTE *) msg->Params[0];
             WORD n = 0;
 
-            while (t[n] && n < CON_TITLE_SIZE - 1)
+            /* Intuition draws titles in ISO-8859-1: decode a UTF-8 title
+               and leave out what that cannot show (a status glyph, with
+               the space that separated it from the text) */
+            while (*t && n < CON_TITLE_SIZE - 1)
             {
-                ICU(o)->unitTitle[n] = t[n];
-                n++;
+                ULONG c = *t++;
+
+                if (CON_IS_UTF8(o) && c >= 0x80)
+                {
+                    WORD more = (c >= 0xF0) ? 3 : (c >= 0xE0) ? 2 :
+                        (c >= 0xC0) ? 1 : 0;
+
+                    c &= (more == 3) ? 0x07 : (more == 2) ? 0x0F : 0x1F;
+                    while (more-- && (*t & 0xC0) == 0x80)
+                        c = (c << 6) | (*t++ & 0x3F);
+                }
+                if (c > 0xFF || c < 0x20)
+                    continue;
+                if (c == ' ' && n == 0)
+                    continue;
+                ICU(o)->unitTitle[n++] = (UBYTE) c;
             }
             ICU(o)->unitTitle[n] = '\0';
 

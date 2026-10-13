@@ -39,6 +39,13 @@ struct stdcondata
     /* Lazily obtained xterm-256 palette pens (-1 = not yet) */
     LONG xtermpens[256];
 
+    /* xterm dynamic colours: OSC 10/11 default fg/bg ([0]/[1]) and OSC 4
+       palette entries 0-15. rgb 0 = not set, else a CONPEN_RGB key. */
+    ULONG defrgb[2];
+    LONG defpen[2];
+    ULONG ansirgb[16];
+    LONG ansipen[16];
+
     /* Small truecolor pen cache, round-robin eviction */
 #define STDCON_TCPENS 64
     struct
@@ -59,29 +66,29 @@ struct stdcondata
     struct Library *scd_GfxBase;
 };
 
-/* SGR 30-37/40-47: the standard ANSI palette */
+/* xterm's default palette: SGR 30-37/40-47 and xterm entries 0-7 */
 static const UBYTE ansi_rgb[8][3] =
 {
     {0x00, 0x00, 0x00},         /* black */
-    {0xAA, 0x00, 0x00},         /* red */
-    {0x00, 0xAA, 0x00},         /* green */
-    {0xAA, 0xAA, 0x00},         /* yellow */
-    {0x00, 0x00, 0xAA},         /* blue */
-    {0xAA, 0x00, 0xAA},         /* magenta */
-    {0x00, 0xAA, 0xAA},         /* cyan */
-    {0xAA, 0xAA, 0xAA},         /* white */
+    {0xCD, 0x00, 0x00},         /* red */
+    {0x00, 0xCD, 0x00},         /* green */
+    {0xCD, 0xCD, 0x00},         /* yellow */
+    {0x00, 0x00, 0xEE},         /* blue */
+    {0xCD, 0x00, 0xCD},         /* magenta */
+    {0x00, 0xCD, 0xCD},         /* cyan */
+    {0xE5, 0xE5, 0xE5},         /* white */
 };
 
-/* SGR 90-97/100-107 and xterm entries 8-15: bright ANSI */
+/* SGR 90-97/100-107 and xterm entries 8-15 */
 static const UBYTE ansi_bright_rgb[8][3] =
 {
-    {0x55, 0x55, 0x55},
-    {0xFF, 0x55, 0x55},
-    {0x55, 0xFF, 0x55},
-    {0xFF, 0xFF, 0x55},
-    {0x55, 0x55, 0xFF},
-    {0xFF, 0x55, 0xFF},
-    {0x55, 0xFF, 0xFF},
+    {0x7F, 0x7F, 0x7F},
+    {0xFF, 0x00, 0x00},
+    {0x00, 0xFF, 0x00},
+    {0xFF, 0xFF, 0x00},
+    {0x5C, 0x5C, 0xFF},
+    {0xFF, 0x00, 0xFF},
+    {0x00, 0xFF, 0xFF},
     {0xFF, 0xFF, 0xFF},
 };
 
@@ -185,6 +192,9 @@ static Object *stdcon_new(Class *cl, Object *o, struct opSet *msg)
                     data->xtermpens[i] = -1;
                 for (i = 0; i < 8; i++)
                     data->obtainedpens[i] = -1;
+                for (i = 0; i < 16; i++)
+                    data->ansipen[i] = -1;
+                data->defpen[0] = data->defpen[1] = -1;
 
                 data->penmap[CONUNIT_PEN_DEFBG] =
                     &data->dri->dri_Pens[BACKGROUNDPEN];
@@ -240,6 +250,16 @@ static VOID stdcon_dispose(Class *cl, Object *o, Msg msg)
         {
             if (data->tcpens[i].rgb)
                 ReleasePen(data->cm, data->tcpens[i].pen);
+        }
+        for (i = 0; i < 16; i++)
+        {
+            if (data->ansipen[i] != -1)
+                ReleasePen(data->cm, data->ansipen[i]);
+        }
+        for (i = 0; i < 2; i++)
+        {
+            if (data->defpen[i] != -1)
+                ReleasePen(data->cm, data->defpen[i]);
         }
     }
 
@@ -337,6 +357,253 @@ static void stdcon_overwritecursor(struct stdcondata *data)
     data->rendercursorcount--;
 }
 
+/*********  xterm dynamic colours (OSC 4/10/11/104/110/111)  **********/
+
+static LONG stdcon_hexval(const UBYTE *p, WORD n)
+{
+    LONG v = 0;
+    WORD i;
+
+    for (i = 0; i < n; i++)
+    {
+        UBYTE c = p[i];
+
+        v <<= 4;
+        if (c >= '0' && c <= '9')
+            v |= c - '0';
+        else if (c >= 'a' && c <= 'f')
+            v |= c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F')
+            v |= c - 'A' + 10;
+        else
+            return -1;
+    }
+    return v;
+}
+
+/* 1-4 hex digits scaled to 8 bits, as XParseColor does */
+static LONG stdcon_hexcomp(const UBYTE *p, WORD n)
+{
+    LONG v;
+
+    if (n < 1 || n > 4 || (v = stdcon_hexval(p, n)) < 0)
+        return -1;
+    return v * 255 / ((1L << (4 * n)) - 1);
+}
+
+/* "#rgb", "#rrggbb", "#rrrgggbbb", "#rrrrggggbbbb" or "rgb:r/g/b" with 1-4
+   digits per component; returns a CONPEN_RGB key, 0 if not a colour */
+static ULONG stdcon_parsecolor(const UBYTE *spec, WORD len)
+{
+    LONG c[3];
+    WORD i;
+
+    if (len > 1 && spec[0] == '#' && (len - 1) % 3 == 0 && len <= 13)
+    {
+        WORD n = (len - 1) / 3;
+
+        for (i = 0; i < 3; i++)
+            if ((c[i] = stdcon_hexcomp(spec + 1 + i * n, n)) < 0)
+                return 0;
+        return CONPEN_RGB(c[0], c[1], c[2]);
+    }
+    if (len > 4 && !strncmp((const char *) spec, "rgb:", 4))
+    {
+        const UBYTE *p = spec + 4, *end = spec + len;
+
+        for (i = 0; i < 3; i++)
+        {
+            const UBYTE *q = p;
+
+            while (q < end && *q != '/')
+                q++;
+            if ((c[i] = stdcon_hexcomp(p, q - p)) < 0)
+                return 0;
+            if (i < 2 && q == end)
+                return 0;
+            p = q + 1;
+        }
+        return CONPEN_RGB(c[0], c[1], c[2]);
+    }
+    return 0;
+}
+
+static ULONG stdcon_penrgb(struct stdcondata *data, UBYTE pen)
+{
+    struct Library *GfxBase = data->scd_GfxBase;
+    ULONG rgb[3];
+
+    GetRGB32(data->cm, pen, 1, rgb);
+    return CONPEN_RGB(rgb[0] >> 24, rgb[1] >> 24, rgb[2] >> 24);
+}
+
+/* Replace an override pen; rgb 0 releases it (back to the default). */
+static VOID stdcon_setslot(struct stdcondata *data, ULONG *rgbslot,
+    LONG *penslot, ULONG rgb)
+{
+    struct Library *GfxBase = data->scd_GfxBase;
+
+    if (*penslot != -1)
+        ReleasePen(data->cm, *penslot);
+    *penslot = -1;
+    *rgbslot = 0;
+    if (rgb)
+    {
+        *penslot = stdcon_bestpen(data, (rgb >> 16) & 0xFF,
+            (rgb >> 8) & 0xFF, rgb & 0xFF);
+        if (*penslot != -1)
+            *rgbslot = rgb;
+    }
+}
+
+static VOID stdcon_colorreply(Class *cl, Object *o, ULONG code, LONG index,
+    ULONG rgb, BOOL st)
+{
+    UBYTE reply[64];
+    UBYTE r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+
+    if (index >= 0)
+        NewRawDoFmt("\x1b]%lu;%ld;rgb:%02lx%02lx/%02lx%02lx/%02lx%02lx%s",
+            RAWFMTFUNC_STRING, reply, code, index, (ULONG) r, (ULONG) r,
+            (ULONG) g, (ULONG) g, (ULONG) b, (ULONG) b,
+            st ? "\x1b\\" : "\x07");
+    else
+        NewRawDoFmt("\x1b]%lu;rgb:%02lx%02lx/%02lx%02lx/%02lx%02lx%s",
+            RAWFMTFUNC_STRING, reply, code, (ULONG) r, (ULONG) r,
+            (ULONG) g, (ULONG) g, (ULONG) b, (ULONG) b,
+            st ? "\x1b\\" : "\x07");
+    con_inject((struct ConsoleBase *)cl->cl_UserData, CU(o), reply, -1);
+}
+
+/* Current colour of palette entry n, for an OSC 4 query */
+static ULONG stdcon_slotrgb(struct stdcondata *data, UWORD n)
+{
+    UBYTE r, g, b;
+
+    if (n < 16 && data->ansirgb[n])
+        return data->ansirgb[n];
+    if (n < 8)
+        return stdcon_penrgb(data, (UBYTE) *(data->penmap[n]));
+    xterm_to_rgb(n, &r, &g, &b);
+    return CONPEN_RGB(r, g, b);
+}
+
+/* Pens printed with the old default colours follow the new ones, as in
+   xterm, where cells refer to "default" rather than to a colour. */
+static VOID stdcon_followdefault(Object *o, UBYTE oldfg, UBYTE oldbg,
+    UBYTE newfg, UBYTE newbg)
+{
+    if (CU(o)->cu_FgPen == oldfg)
+        CU(o)->cu_FgPen = newfg;
+    if (CU(o)->cu_BgPen == oldbg)
+        CU(o)->cu_BgPen = newbg;
+}
+
+static VOID stdcon_setcolor(Class *cl, Object *o, IPTR *params)
+{
+    struct stdcondata *data = INST_DATA(cl, o);
+    ULONG code = params[0];
+    const UBYTE *p = (const UBYTE *) params[1];
+    BOOL st = params[2];
+    UBYTE oldfg, oldbg, newfg, newbg;
+
+    if (!data->cm)
+        return;
+
+    Console_GetColorPen(o, CONUNIT_PEN_DEFFG, &oldfg);
+    Console_GetColorPen(o, CONUNIT_PEN_DEFBG, &oldbg);
+
+    if (code == 10 || code == 11)
+    {
+        /* OSC 10;spec;spec... sets fg, then bg (xterm walks up the list) */
+        WORD slot = code - 10;
+
+        while (*p && slot < 2)
+        {
+            const UBYTE *q = p;
+
+            while (*q && *q != ';')
+                q++;
+            if (q - p == 1 && *p == '?')
+                stdcon_colorreply(cl, o, 10 + slot, -1,
+                    data->defrgb[slot] ? data->defrgb[slot] :
+                    stdcon_penrgb(data, slot ? oldbg : oldfg), st);
+            else
+            {
+                ULONG rgb = stdcon_parsecolor(p, q - p);
+
+                if (rgb)
+                    stdcon_setslot(data, &data->defrgb[slot],
+                        &data->defpen[slot], rgb);
+            }
+            slot++;
+            p = *q ? q + 1 : q;
+        }
+    }
+    else if (code == 110 || code == 111)
+    {
+        WORD slot = code - 110;
+
+        stdcon_setslot(data, &data->defrgb[slot], &data->defpen[slot], 0);
+    }
+    else if (code == 4)
+    {
+        /* OSC 4;n;spec[;n;spec...] */
+        while (*p)
+        {
+            const UBYTE *q = p, *r;
+            LONG n = 0;
+
+            while (*q >= '0' && *q <= '9')
+                n = n * 10 + (*q++ - '0');
+            if (q == p || *q != ';' || n > 255)
+                break;
+            r = ++q;
+            while (*r && *r != ';')
+                r++;
+            if (r - q == 1 && *q == '?')
+                stdcon_colorreply(cl, o, 4, n, stdcon_slotrgb(data, n), st);
+            else if (n < 16)
+            {
+                ULONG rgb = stdcon_parsecolor(q, r - q);
+
+                if (rgb)
+                    stdcon_setslot(data, &data->ansirgb[n],
+                        &data->ansipen[n], rgb);
+            }
+            p = *r ? r + 1 : r;
+        }
+    }
+    else if (code == 104)
+    {
+        /* OSC 104 resets the whole palette, OSC 104;n;n... single entries */
+        if (!*p)
+        {
+            WORD n;
+
+            for (n = 0; n < 16; n++)
+                stdcon_setslot(data, &data->ansirgb[n], &data->ansipen[n],
+                    0);
+        }
+        while (*p)
+        {
+            LONG n = 0;
+            const UBYTE *q = p;
+
+            while (*q >= '0' && *q <= '9')
+                n = n * 10 + (*q++ - '0');
+            if (q > p && n < 16)
+                stdcon_setslot(data, &data->ansirgb[n], &data->ansipen[n],
+                    0);
+            p = *q ? q + 1 : q;
+        }
+    }
+
+    Console_GetColorPen(o, CONUNIT_PEN_DEFFG, &newfg);
+    Console_GetColorPen(o, CONUNIT_PEN_DEFBG, &newbg);
+    stdcon_followdefault(o, oldfg, oldbg, newfg, newbg);
+}
+
 /*********  StdCon::DoCommand()  ****************************/
 
 static VOID stdcon_docommand(Class *cl, Object *o,
@@ -350,6 +617,12 @@ static VOID stdcon_docommand(Class *cl, Object *o,
 
     EnterFunc(bug("StdCon::DoCommand(o=%p, cmd=%d, params=%p)\n",
             o, msg->Command, params));
+
+    if (msg->Command == C_SET_COLOR)
+    {
+        stdcon_setcolor(cl, o, params);
+        return;
+    }
 
     /* Obscured (background tab): keep all cursor/mode/state logic but
        never touch the shared window's RastPort. */
@@ -1169,6 +1442,24 @@ IPTR stdcon_getpencolor(Class *cl, Object *o, struct P_Console_GetColorPen *msg)
 {
     struct stdcondata *data = INST_DATA(cl, o);
     ULONG idx = msg->ColorIdx;
+
+    if ((idx == CONUNIT_PEN_DEFFG || idx == CONUNIT_PEN_DEFBG)
+        && data->defpen[idx == CONUNIT_PEN_DEFBG] != -1)
+    {
+        *msg->PenPtr = (UBYTE) data->defpen[idx == CONUNIT_PEN_DEFBG];
+        return TRUE;
+    }
+    if (idx < 8 && data->ansipen[idx] != -1)
+    {
+        *msg->PenPtr = (UBYTE) data->ansipen[idx];
+        return TRUE;
+    }
+    if (CONPEN_ISXTERM(idx) && CONPEN_XTERMIDX(idx) < 16
+        && data->ansipen[CONPEN_XTERMIDX(idx)] != -1)
+    {
+        *msg->PenPtr = (UBYTE) data->ansipen[CONPEN_XTERMIDX(idx)];
+        return TRUE;
+    }
 
     if (CONPEN_ISRGB(idx) && data->cm)
     {
