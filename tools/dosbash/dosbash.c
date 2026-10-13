@@ -229,18 +229,36 @@ static int run(const char *command, const char *pwdfile, int nullinput)
 
     if (pwdfile)
     {
+        /* Report the directory as the C library names it, the form the
+           caller's own getcwd()/realpath() use: CD prints the volume name
+           ("RAM Disk:"), which they need not resolve. */
+        char cwd[1024];
+        const char *report = NULL;
+        BPTR lock = BNULL;
+
         text = read_small(dirfile);
         if (text)
+            lock = Lock((STRPTR) text, SHARED_LOCK);
+        if (lock)
+        {
+            BPTR old = CurrentDir(lock);
+
+            if (getcwd(cwd, sizeof(cwd)))
+                report = cwd;
+            CurrentDir(old);
+            UnLock(lock);
+        }
+        if (report)
         {
             int fd = open(pwdfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
             if (fd >= 0)
             {
-                write(fd, text, strlen(text));
+                write(fd, report, strlen(report));
                 close(fd);
             }
-            free(text);
         }
+        free(text);
     }
 
     DeleteFile((STRPTR) script);
