@@ -119,8 +119,8 @@ diff -ruN libuv-v1.48.0.orig/include/uv.h libuv-v1.48.0/include/uv.h
  #define XX(_, name) uv_ ## name ## _t name;
 diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
 --- libuv-v1.48.0.orig/src/threadpool.c	2024-02-07 14:20:07.000000000 -0600
-+++ libuv-v1.48.0/src/threadpool.c	2026-09-15 02:41:44.308924112 -0500
-@@ -25,6 +25,12 @@
++++ libuv-v1.48.0/src/threadpool.c	2026-10-12 20:55:00.000000000 -0500
+@@ -25,10 +25,39 @@
  # include "unix/internal.h"
  #endif
  
@@ -133,7 +133,46 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
  #include <stdlib.h>
  
  #define MAX_THREADPOOL_SIZE 1024
-@@ -59,6 +65,15 @@
+ 
++#ifdef __AROS__
++/* One uv1.library image serves every process in the guest, so these statics
++ * were guest-wide: work queued by one Node process woke the idle workers of a
++ * Node process that had already exited, and they ran it on that process's
++ * closed library base (page fault in __stdc_geterrnoptr); two live processes
++ * shared workers, and with them each other's posixc fd tables.  Each
++ * process's pool lives in its per-task library base instead
++ * (src-aros/aros-intbase.h) and is joined on its last close; the names below
++ * keep the upstream code unchanged. */
++#include "aros-intbase.h"
++#define once (uv__aros_threadpool_state()->once)
++#define cond (uv__aros_threadpool_state()->cond)
++#define mutex (uv__aros_threadpool_state()->mutex)
++#define idle_threads (uv__aros_threadpool_state()->idle_threads)
++#define slow_io_work_running (uv__aros_threadpool_state()->slow_io_work_running)
++#define nthreads (uv__aros_threadpool_state()->nthreads)
++#define threads (uv__aros_threadpool_state()->threads)
++#define default_threads (uv__aros_threadpool_state()->default_threads)
++#define exit_message (uv__aros_threadpool_state()->exit_message)
++#define pool_wq (uv__aros_threadpool_state()->wq)
++#define run_slow_work_message (uv__aros_threadpool_state()->run_slow_work_message)
++#define slow_io_pending_wq (uv__aros_threadpool_state()->slow_io_pending_wq)
++#else
+ static uv_once_t once = UV_ONCE_INIT;
+ static uv_cond_t cond;
+ static uv_mutex_t mutex;
+@@ -38,9 +67,10 @@
+ static uv_thread_t* threads;
+ static uv_thread_t default_threads[4];
+ static struct uv__queue exit_message;
+-static struct uv__queue wq;
++static struct uv__queue pool_wq;
+ static struct uv__queue run_slow_work_message;
+ static struct uv__queue slow_io_pending_wq;
++#endif
+ 
+ static unsigned int slow_work_thread_threshold(void) {
+   return (nthreads + 1) / 2;
+@@ -59,6 +89,15 @@
    struct uv__queue* q;
    int is_slow_work;
  
@@ -149,7 +188,46 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
    uv_sem_post((uv_sem_t*) arg);
    arg = NULL;
  
-@@ -141,6 +156,9 @@
+@@ -68,16 +107,16 @@
+ 
+     /* Keep waiting while either no work is present or only slow I/O
+        and we're at the threshold for that. */
+-    while (uv__queue_empty(&wq) ||
+-           (uv__queue_head(&wq) == &run_slow_work_message &&
+-            uv__queue_next(&run_slow_work_message) == &wq &&
++    while (uv__queue_empty(&pool_wq) ||
++           (uv__queue_head(&pool_wq) == &run_slow_work_message &&
++            uv__queue_next(&run_slow_work_message) == &pool_wq &&
+             slow_io_work_running >= slow_work_thread_threshold())) {
+       idle_threads += 1;
+       uv_cond_wait(&cond, &mutex);
+       idle_threads -= 1;
+     }
+ 
+-    q = uv__queue_head(&wq);
++    q = uv__queue_head(&pool_wq);
+     if (q == &exit_message) {
+       uv_cond_signal(&cond);
+       uv_mutex_unlock(&mutex);
+@@ -92,7 +131,7 @@
+       /* If we're at the slow I/O threshold, re-schedule until after all
+          other work in the queue is done. */
+       if (slow_io_work_running >= slow_work_thread_threshold()) {
+-        uv__queue_insert_tail(&wq, q);
++        uv__queue_insert_tail(&pool_wq, q);
+         continue;
+       }
+ 
+@@ -110,7 +149,7 @@
+ 
+       /* If there is more slow I/O work, schedule it to be run as well. */
+       if (!uv__queue_empty(&slow_io_pending_wq)) {
+-        uv__queue_insert_tail(&wq, &run_slow_work_message);
++        uv__queue_insert_tail(&pool_wq, &run_slow_work_message);
+         if (idle_threads > 0)
+           uv_cond_signal(&cond);
+       }
+@@ -141,6 +180,9 @@
  
  static void post(struct uv__queue* q, enum uv__work_kind kind) {
    uv_mutex_lock(&mutex);
@@ -159,7 +237,25 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
    if (kind == UV__WORK_SLOW_IO) {
      /* Insert into a separate queue. */
      uv__queue_insert_tail(&slow_io_pending_wq, q);
-@@ -326,6 +344,9 @@
+@@ -153,7 +195,7 @@
+     q = &run_slow_work_message;
+   }
+ 
+-  uv__queue_insert_tail(&wq, q);
++  uv__queue_insert_tail(&pool_wq, q);
+   if (idle_threads > 0)
+     uv_cond_signal(&cond);
+   uv_mutex_unlock(&mutex);
+@@ -220,7 +262,7 @@
+   if (uv_mutex_init(&mutex))
+     abort();
+ 
+-  uv__queue_init(&wq);
++  uv__queue_init(&pool_wq);
+   uv__queue_init(&slow_io_pending_wq);
+   uv__queue_init(&run_slow_work_message);
+ 
+@@ -326,6 +368,9 @@
  
      w = container_of(q, struct uv__work, wq);
      err = (w->work == uv__cancelled) ? UV_ECANCELED : 0;
@@ -169,7 +265,7 @@ diff -ruN libuv-v1.48.0.orig/src/threadpool.c libuv-v1.48.0/src/threadpool.c
      w->done(w, err);
      nevents++;
    }
-@@ -345,6 +366,13 @@
+@@ -345,6 +390,13 @@
  }
  
  

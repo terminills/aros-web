@@ -26,6 +26,23 @@
 #include <exec/libraries.h>
 #include <uv.h>
 
+/* src/threadpool.c's pool, one per process for the same reason (see there). */
+struct uv__aros_threadpool
+{
+    uv_once_t once;
+    uv_cond_t cond;
+    uv_mutex_t mutex;
+    unsigned int idle_threads;
+    unsigned int slow_io_work_running;
+    unsigned int nthreads;
+    uv_thread_t *threads;
+    uv_thread_t default_threads[4];
+    struct uv__queue exit_message;
+    struct uv__queue wq;
+    struct uv__queue run_slow_work_message;
+    struct uv__queue slow_io_pending_wq;
+};
+
 struct UV1IntBase
 {
     struct Library lib;
@@ -36,6 +53,10 @@ struct UV1IntBase
        (aros-taskbase.c uv_aros_reclaim_default_loop). */
     uv_loop_t *default_loop_ptr;
     uv_loop_t  default_loop_struct;
+
+    struct uv__aros_threadpool threadpool;
 };
+
+struct uv__aros_threadpool *uv__aros_threadpool_state(void);
 
 #endif /* UV1_AROS_INTBASE_H */

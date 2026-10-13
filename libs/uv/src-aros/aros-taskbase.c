@@ -20,7 +20,9 @@
 
     This entry point is safe to call from any task: it only reads the slot
     through exec (an absolute SysBase), never a rellib.  Nothing in this
-    file may call into stdc/posixc.
+    file may call into stdc/posixc, except the CLOSELIB hook's pool join:
+    that runs on the closing process itself, before genmodule closes its
+    rellibs.
 
     The same LDFlush path is also why uv1.library vetoes its own expunge
     from any task but its last closer (hooks below).  uv1 links the static
@@ -90,6 +92,22 @@ uv_loop_t *uv_aros_default_loop_struct(void)
     return &base->default_loop_struct;
 }
 
+/*
+ * src/threadpool.c's state for the calling task's process.  A pool worker
+ * never opened uv1 and reaches its creator's copy, i.e. the pool it serves.
+ * A task without any base gets a guest-wide pool, as for the default loop.
+ */
+static struct uv__aros_threadpool uv_aros_orphan_threadpool = { UV_ONCE_INIT };
+
+struct uv__aros_threadpool *uv__aros_threadpool_state(void)
+{
+    struct UV1IntBase *base = (struct UV1IntBase *)__aros_getoffsettable();
+
+    if (base == NULL)
+        return &uv_aros_orphan_threadpool;
+    return &base->threadpool;
+}
+
 static ULONG uv_aros_closer_id;
 
 /*
@@ -157,6 +175,11 @@ char *__aros_borrow_offsettable(void)
 
 static int uv_aros_open_record_base(struct Library *lh)
 {
+    static const struct uv__aros_threadpool tp_init = { UV_ONCE_INIT };
+
+    /* The per-task base is a copy of the root base: start with no pool. */
+    CopyMem((APTR)&tp_init, &((struct UV1IntBase *)lh)->threadpool,
+            sizeof(tp_init));
     uv_aros_borrow_base = (char *)lh;
     return 1;
 }
@@ -169,6 +192,9 @@ static int uv_aros_close_last(struct Library *lh)
     if (uv_aros_borrow_base == (char *)lh)
         uv_aros_borrow_base = NULL;
     uv_aros_reclaim_default_loop((struct UV1IntBase *)lh);
+    /* Join this process's pool workers while the base they resolve through
+       is still alive: left idle, the next process's work would wake them. */
+    uv__threadpool_cleanup();
     /* The closing task's bsdsocket base and socket registry (aros-net.c
        keeps them per task); exec calls only, like everything here. */
     uv__aros_net_task_release();
