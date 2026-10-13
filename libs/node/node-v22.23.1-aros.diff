@@ -2562,7 +2562,19 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  namespace node {
  
  using v8::Array;
-@@ -883,19 +899,50 @@
+@@ -816,7 +832,11 @@
+   }
+   // TODO(nicolo-ribaudo): remove this once V8 doesn't enable it by default
+   // anymore.
++#ifndef __AROS__
++  // AROS: v8.library is one engine shared with Chromium, which keeps import
++  // assertions on; a Node started first must not switch them off for it.
+   v8_args.emplace_back("--no-harmony-import-assertions");
++#endif
+ 
+   if (!per_process::cli_options->per_isolate->max_old_space_size_percentage
+            .empty()) {
+@@ -883,19 +903,50 @@
      std::vector<std::string>* exec_argv,
      std::vector<std::string>* errors,
      ProcessInitializationFlags::Flags flags) {
@@ -2613,7 +2625,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
    // Cache the original command line to be
-@@ -905,8 +952,22 @@
+@@ -905,8 +956,22 @@
    // Node provides a "v8.setFlagsFromString" method to dynamically change flags.
    // Hence do not freeze flags when initializing V8. In a browser setting, this
    // is security relevant, for Node it's less important.
@@ -2636,7 +2648,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  #if defined(NODE_V8_OPTIONS)
    // Should come before the call to V8::SetFlagsFromCommandLine()
    // so the user can disable a flag --foo at run-time by passing
-@@ -923,6 +984,7 @@
+@@ -923,6 +988,7 @@
    // Specify this explicitly to avoid being affected by V8 changes to the
    // default value.
    V8::SetFlagsFromString("--rehash-snapshot");
@@ -2644,7 +2656,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    // TODO(joyeecheung): make this a per-env option and move the normalization
-@@ -933,10 +995,14 @@
+@@ -933,10 +999,14 @@
      per_process::cli_options->use_system_ca = true;
    }
  #endif  // HAVE_OPENSSL
@@ -2659,7 +2671,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    if (!env_files.empty()) {
      CHECK(!per_process::v8_initialized);
-@@ -1035,8 +1101,10 @@
+@@ -1035,8 +1105,10 @@
  #endif
  
    if (!(flags & ProcessInitializationFlags::kDisableCLIOptions)) {
@@ -2670,7 +2682,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (exit_code != ExitCode::kNoFailure) return exit_code;
    }
  
-@@ -1112,6 +1180,7 @@
+@@ -1112,6 +1184,7 @@
  InitializeOncePerProcessInternal(const std::vector<std::string>& args,
                                   ProcessInitializationFlags::Flags flags =
                                       ProcessInitializationFlags::kNoFlags) {
@@ -2678,7 +2690,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    auto result = std::make_shared<InitializationResultImpl>();
    result->args_ = args;
  
-@@ -1121,12 +1190,16 @@
+@@ -1121,12 +1194,16 @@
      per_process::enabled_debug_list.Parse(nullptr);
    }
  
@@ -2695,7 +2707,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
      if (result->exit_code_enum() != ExitCode::kNoFailure) {
        result->early_return_ = true;
        return result;
-@@ -1266,6 +1339,17 @@
+@@ -1266,6 +1343,17 @@
      CHECK(ncrypto::CSPRNG(nullptr, 0));
  
      V8::SetEntropySource([](unsigned char* buffer, size_t length) {
@@ -2713,7 +2725,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
        // V8 falls back to very weak entropy when this function fails
        // and /dev/urandom isn't available. That wouldn't be so bad if
        // the entropy was only used for Math.random() but it's also used for
-@@ -1282,14 +1366,63 @@
+@@ -1282,14 +1370,63 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2778,7 +2790,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1297,12 +1430,18 @@
+@@ -1297,12 +1434,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2798,7 +2810,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1355,6 +1494,27 @@
+@@ -1355,6 +1498,27 @@
      ResetSignalHandlers();
    }
  
@@ -2826,7 +2838,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1380,6 +1540,7 @@
+@@ -1380,6 +1544,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2834,7 +2846,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
-@@ -1568,14 +1729,19 @@
+@@ -1568,14 +1733,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
