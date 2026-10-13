@@ -48,11 +48,15 @@ for a in "$@"; do
     args+=("$a")
 done
 
+# The SDK's own include directory goes AFTER node's -I paths: the SDK also
+# ships libraries node bundles (OpenSSL 4 since 2026-09), and bundled sources
+# must find their own headers, not the SDK's same-named ones.
 exec "$NODE_AROS_CC" \
     -mcmodel=large -mno-red-zone \
-    -I"$compat_dir" -I"$NODE_AROS_SDK_INCLUDE" \
+    -I"$compat_dir" \
     -I"$NODE_AROS_SDK_INCLUDE/aros/posixc" -I"$NODE_AROS_SDK_INCLUDE/aros/stdc" \
     "${sqlite_compat[@]}" "${compat_include[@]}" \
     -DM_METHOD=3 -DRIO_NOTIFIER_METHOD=1 \
     -DOPENSSL_NO_DSO -DOPENSSL_NO_DTLS \
-    -DOPENSSL_NO_SECURE_MEMORY -DZSTD_TRACE=0 "${args[@]}"
+    -DOPENSSL_NO_SECURE_MEMORY -DZSTD_TRACE=0 "${args[@]}" \
+    -I"$NODE_AROS_SDK_INCLUDE"
