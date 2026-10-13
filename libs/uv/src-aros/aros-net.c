@@ -37,6 +37,10 @@
     ever touches its sockets from the task that polls it, so this is the
     natural ownership; threadpool DNS never reaches these shims.
 */
+/* fd.library numbers descriptors system-wide: beside Chromium a new socket
+   lands far above the SDK's FD_SETSIZE of 64. */
+#define FD_SETSIZE 1024
+
 #include <proto/exec.h>
 #include <proto/dos.h>
 #include <exec/semaphores.h>
@@ -89,7 +93,7 @@
 #include <strings.h>             /* bzero, used by FD_ZERO */
 
 /* socket-fd registry: one flag per fd (bsdsocket default dtable is small). */
-#define UV_AROS_MAXSOCK 256
+#define UV_AROS_MAXSOCK FD_SETSIZE
 
 /*
  * Per-task socket state (see the file comment).  is_dos_pipe stays one table:

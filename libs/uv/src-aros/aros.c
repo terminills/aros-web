@@ -37,7 +37,7 @@ void uv__aros_process_reap(uv_loop_t* loop);
 void uv__aros_net_loop_init(void);
 void uv__aros_net_loop_delete(void);
 
-#define UV_AROS_POLL_MAX 64   /* bsdsocket FD_SETSIZE */
+#define UV_AROS_POLL_MAX 1024 /* FD_SETSIZE in aros-net.c */
 #define UV_AROS_TTY_POLL_MS 10
 
 static unsigned int uv__aros_threadpool_pending(uv_loop_t* loop)
