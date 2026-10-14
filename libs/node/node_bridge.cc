@@ -9,6 +9,7 @@
 #include <aros/symbolsets.h>
 #include <clib/exec_protos.h>
 #include <exec/libraries.h>
+#include <exec/semaphores.h>
 #include <libraries/node.h>
 #include <proto/node-v8.h>
 #include <proto/v8.h>
@@ -124,6 +125,101 @@ static int NodeExpungePrepare(LIBBASETYPEPTR lh)
 
 ADD2CLOSELIB(NodeCloseLast, 0)
 ADD2EXPUNGELIB(NodeExpungePrepare, 0)
+
+/*
+ * Each Node process's NodePlatform (node_v8_platform-inl.h), keyed by the
+ * process's per-task base: every task of one process resolves the same base,
+ * and a process that runs Node concurrently with another resolves its own.
+ * The platform's worker threads use that process's library bases, so the
+ * platform is created and disposed by its process, never kept for the
+ * library's life.
+ */
+struct NodeProcessPlatform {
+  void *base;
+  void *platform;
+};
+
+static constexpr int NodeProcessPlatformCapacity = 32;
+static NodeProcessPlatform NodeProcessPlatforms[NodeProcessPlatformCapacity];
+static struct SignalSemaphore NodeProcessPlatformsLock;
+
+static int NodeProcessPlatformsInit(LIBBASETYPEPTR lh)
+{
+  (void)lh;
+  InitSemaphore(&NodeProcessPlatformsLock);
+  return 1;
+}
+
+ADD2INITLIB(NodeProcessPlatformsInit, 0)
+
+extern "C" void *node_aros_process_platform(void)
+{
+  void *base = __aros_getoffsettable();
+  void *platform = nullptr;
+
+  if (base == nullptr)
+    return nullptr;
+  ObtainSemaphoreShared(&NodeProcessPlatformsLock);
+  for (const auto &entry : NodeProcessPlatforms)
+    if (entry.base == base) {
+      platform = entry.platform;
+      break;
+    }
+  ReleaseSemaphore(&NodeProcessPlatformsLock);
+  return platform;
+}
+
+extern "C" void node_aros_set_process_platform(void *platform)
+{
+  void *base = __aros_getoffsettable();
+  NodeProcessPlatform *slot = nullptr;
+
+  if (base == nullptr)
+    return;
+  ObtainSemaphore(&NodeProcessPlatformsLock);
+  for (auto &entry : NodeProcessPlatforms)
+    if (entry.base == base) {
+      slot = &entry;
+      break;
+    } else if (slot == nullptr && entry.base == nullptr) {
+      slot = &entry;
+    }
+  if (slot != nullptr) {
+    slot->base = platform != nullptr ? base : nullptr;
+    slot->platform = platform;
+  }
+  ReleaseSemaphore(&NodeProcessPlatformsLock);
+  if (slot == nullptr)
+    abort();
+}
+
+extern "C" void node_aros_v8_uninstall_platform(void *platform)
+{
+  using UninstallFn = void (*)(v8::Platform *);
+  auto uninstall = reinterpret_cast<UninstallFn>(
+      NodeV8ResolveEngineSymbol("__aros_v8_uninstall_platform"));
+
+  if (uninstall != nullptr)
+    uninstall(static_cast<v8::Platform *>(platform));
+}
+
+/* A process that ended without disposing its platform (it crashed) must not
+   leave the entry for the next process given the same base address. */
+static int NodeProcessPlatformForget(LIBBASETYPEPTR lh)
+{
+  ObtainSemaphore(&NodeProcessPlatformsLock);
+  for (auto &entry : NodeProcessPlatforms)
+    if (entry.base == (void *)lh) {
+      NodeBridgeLog("[NodePlatform] process %p closed with its platform %p\n",
+                    lh, entry.platform);
+      entry.base = nullptr;
+      entry.platform = nullptr;
+    }
+  ReleaseSemaphore(&NodeProcessPlatformsLock);
+  return 1;
+}
+
+ADD2CLOSELIB(NodeProcessPlatformForget, 0)
 
 /*
  * Per-task base binding for the entry points below.

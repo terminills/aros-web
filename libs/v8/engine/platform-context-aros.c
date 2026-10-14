@@ -287,6 +287,45 @@ void __aros_v8_install_platform(void *platform)
     v8_platform_promote_root(FindTask(NULL), platform);
 }
 
+/* A program is disposing its platform (Node, at the end of each run; the
+   engine itself stays up): forget it in the calling task's slot and in every
+   record, and name a platform another live program installed, for V8's
+   fallback. */
+void *__aros_v8_forget_platform(void *platform)
+{
+    APTR taskres_base = v8_platform_get_taskres_base();
+    LONG slot = v8_platform_get_slot(taskres_base);
+    struct SignalSemaphore *sem;
+    void *next = NULL;
+    int i;
+
+    if (platform == NULL)
+        return NULL;
+    if ((APTR)__GetTaskStorageSlot_WB(taskres_base, slot) == platform)
+        __SetTaskStorageSlot_WB(taskres_base, slot, 0);
+
+    sem = v8_platform_owners_sem();
+    ObtainSemaphore(sem);
+    for (i = 0; i < V8_PLATFORM_OWNERS; i++)
+    {
+        struct v8_platform_owner *o = &v8_platform_owners[i];
+
+        if (!o->task)
+            continue;
+        if (o->platform == platform)
+        {
+            o->task = NULL;
+            o->platform = NULL;
+        }
+        else if (!next && o->platform != V8_PLATFORM_PENDING &&
+                 FindTaskByPID(o->id))
+            next = o->platform;
+    }
+    ReleaseSemaphore(sem);
+
+    return next;
+}
+
 void *__aros_v8_get_current_platform(void)
 {
     APTR taskres_base = v8_platform_get_taskres_base();

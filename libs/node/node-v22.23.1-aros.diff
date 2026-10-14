@@ -2538,7 +2538,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    return scope.Escape(fun);
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node.cc node-v22.23.1/src/node.cc
 --- node-v22.23.1/src/node.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node.cc	2026-09-15 17:00:00.000000000 -0500
++++ node-v22.23.1/src/node.cc	2026-10-13 23:10:13.989503360 -0500
 @@ -134,6 +134,22 @@
  #include <tuple>
  #include <vector>
@@ -2725,7 +2725,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
        // V8 falls back to very weak entropy when this function fails
        // and /dev/urandom isn't available. That wouldn't be so bad if
        // the entropy was only used for Math.random() but it's also used for
-@@ -1282,14 +1370,63 @@
+@@ -1282,14 +1370,54 @@
  #endif  // HAVE_OPENSSL
    }
  
@@ -2756,24 +2756,15 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +     never initialized, Platform() == NULL, and NewIsolate() faulted on the
 +     NULL platform (2026-09-15).
 +
-+     v8.library's platform pointer is task-local (parent-slot inherited), so
-+     a kept platform must still be installed on each new invocation's task:
-+     on AROS V8::InitializePlatform() only records the slot once V8 is up.
-+     Without this a task with no slot falls back to the engine's first-ever
-+     platform, which belongs to whichever process installed it. */
++     The NodePlatform itself is the exception: its worker threads run on the
++     library bases of the process that created them, so each process creates
++     its own and TearDownOncePerProcess() disposes it (node_v8_platform-inl.h).
++     A worker kept for the library's life outlived its process and ran the
++     next process's tasks through freed bases. */
    if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform)) {
 +    NODE_AROS_PHASE("v8-platform enter");
-+#ifdef __AROS__
-+    if (!per_process::v8_platform.initialized_) {
-+      per_process::v8_platform.Initialize(
-+          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
-+    } else {
-+      V8::InitializePlatform(per_process::v8_platform.Platform());
-+    }
-+#else
      per_process::v8_platform.Initialize(
          static_cast<int>(per_process::cli_options->v8_thread_pool_size));
-+#endif
      result->platform_ = per_process::v8_platform.Platform();
 +    NODE_AROS_PHASE("v8-platform leave");
    }
@@ -2790,7 +2781,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
      // Disable absl deadlock detection in V8 as it reports false-positive cases.
      // TODO(legendecas): Replace this global disablement with case suppressions.
-@@ -1297,12 +1434,18 @@
+@@ -1297,12 +1425,18 @@
      absl::SetMutexDeadlockDetectionMode(absl::OnDeadlockCycle::kIgnore);
    }
  
@@ -2810,7 +2801,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    }
  
  #if NODE_USE_V8_WASM_TRAP_HANDLER
-@@ -1355,6 +1498,27 @@
+@@ -1355,6 +1489,29 @@
      ResetSignalHandlers();
    }
  
@@ -2831,14 +2822,16 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +     re-initialized.
 +
 +     The per-invocation Isolate is still created and disposed normally, which
-+     V8 does support. What survives is the platform, the V8 process state and
-+     cppgc's process heap - i.e. exactly what one library load should own. */
-+  (void)flags;
++     V8 does support, and so is this process's NodePlatform. What survives is
++     the V8 process state and cppgc's process heap - i.e. exactly what one
++     library load should own. */
++  if (!(flags & ProcessInitializationFlags::kNoInitializeNodeV8Platform))
++    per_process::v8_platform.Dispose();
 +#else
    if (!(flags & ProcessInitializationFlags::kNoInitializeCppgc)) {
      cppgc::ShutdownProcess();
    }
-@@ -1380,6 +1544,7 @@
+@@ -1380,6 +1537,7 @@
      // will never be fully cleaned up.
      per_process::v8_platform.Dispose();
    }
@@ -2846,7 +2839,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  #if HAVE_OPENSSL
    crypto::CleanupCachedRootCertificates();
-@@ -1568,14 +1733,19 @@
+@@ -1568,14 +1726,19 @@
  }
  
  static ExitCode StartInternal(int argc, char** argv) {
@@ -3960,6 +3953,117 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
    HeapCodeStatistics s;
    args.GetIsolate()->GetHeapCodeAndMetadataStatistics(&s);
    AliasedFloat64Array& buffer = data->heap_code_statistics_buffer;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_v8_platform-inl.h node-v22.23.1/src/node_v8_platform-inl.h
+--- node-v22.23.1/src/node_v8_platform-inl.h	2026-06-23 11:27:43.000000000 -0500
++++ node-v22.23.1/src/node_v8_platform-inl.h	2026-10-13 23:09:59.894290319 -0500
+@@ -61,27 +61,57 @@
+   v8::TracingController* controller_;
+ };
+ 
++#if defined(__AROS__)
++// node.library outlives every AROS process that runs Node and is shared by
++// those running at once, while a NodePlatform's worker threads run on the
++// library bases of the process that created them. So each process keeps its
++// own NodePlatform (node_bridge.cc holds it per process) and disposes it when
++// it ends; the tracing agent stays with the library.
++extern "C" void* node_aros_process_platform(void);
++extern "C" void node_aros_set_process_platform(void* platform);
++extern "C" void node_aros_v8_uninstall_platform(void* platform);
++#endif
++
+ struct V8Platform {
+   bool initialized_ = false;
+ 
+ #if NODE_USE_V8_PLATFORM
++#if defined(__AROS__)
++  inline void Initialize(int thread_pool_size) {
++    if (!initialized_) {
++      initialized_ = true;
++      InitializeTracing();
++    }
++    NodePlatform* platform = Platform();
++    if (platform == nullptr) {
++      platform = new NodePlatform(thread_pool_size,
++                                  tracing_agent_->GetTracingController());
++      node_aros_set_process_platform(platform);
++    }
++    v8::V8::InitializePlatform(platform);
++  }
++
++  inline void Dispose() {
++    NodePlatform* platform = Platform();
++    if (platform == nullptr)
++      return;
++    node_aros_set_process_platform(nullptr);
++    node_aros_v8_uninstall_platform(platform);
++    platform->Shutdown();
++    delete platform;
++  }
++
++  inline void DrainVMTasks(v8::Isolate* isolate) {
++    Platform()->DrainTasks(isolate);
++  }
++#else
+   inline void Initialize(int thread_pool_size) {
+     CHECK(!initialized_);
+     initialized_ = true;
+-    tracing_agent_ = std::make_unique<tracing::Agent>();
+-    node::tracing::TraceEventHelper::SetAgent(tracing_agent_.get());
+-    node::tracing::TracingController* controller =
+-        tracing_agent_->GetTracingController();
+-    trace_state_observer_ =
+-        std::make_unique<NodeTraceStateObserver>(controller);
+-    controller->AddTraceStateObserver(trace_state_observer_.get());
+-    tracing_file_writer_ = tracing_agent_->DefaultHandle();
+-    // Only start the tracing agent if we enabled any tracing categories.
+-    if (!per_process::cli_options->trace_event_categories.empty()) {
+-      StartTracingAgent();
+-    }
++    InitializeTracing();
+     // Tracing must be initialized before platform threads are created.
+-    platform_ = new NodePlatform(thread_pool_size, controller);
++    platform_ = new NodePlatform(thread_pool_size,
++                                 tracing_agent_->GetTracingController());
+     v8::V8::InitializePlatform(platform_);
+   }
+   // Make sure V8Platform don not call into Libuv threadpool,
+@@ -105,6 +135,22 @@
+   inline void DrainVMTasks(v8::Isolate* isolate) {
+     platform_->DrainTasks(isolate);
+   }
++#endif
++
++  inline void InitializeTracing() {
++    tracing_agent_ = std::make_unique<tracing::Agent>();
++    node::tracing::TraceEventHelper::SetAgent(tracing_agent_.get());
++    node::tracing::TracingController* controller =
++        tracing_agent_->GetTracingController();
++    trace_state_observer_ =
++        std::make_unique<NodeTraceStateObserver>(controller);
++    controller->AddTraceStateObserver(trace_state_observer_.get());
++    tracing_file_writer_ = tracing_agent_->DefaultHandle();
++    // Only start the tracing agent if we enabled any tracing categories.
++    if (!per_process::cli_options->trace_event_categories.empty()) {
++      StartTracingAgent();
++    }
++  }
+ 
+   inline void StartTracingAgent() {
+     constexpr auto convert_to_set =
+@@ -137,7 +183,13 @@
+     return &tracing_file_writer_;
+   }
+ 
++#if defined(__AROS__)
++  inline NodePlatform* Platform() {
++    return static_cast<NodePlatform*>(node_aros_process_platform());
++  }
++#else
+   inline NodePlatform* Platform() { return platform_; }
++#endif
+ 
+   std::unique_ptr<NodeTraceStateObserver> trace_state_observer_;
+   std::unique_ptr<tracing::Agent> tracing_agent_;
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/threadpoolwork-inl.h node-v22.23.1/src/threadpoolwork-inl.h
 --- node-v22.23.1/src/threadpoolwork-inl.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/threadpoolwork-inl.h	2026-09-16 12:31:00.000000000 -0500
