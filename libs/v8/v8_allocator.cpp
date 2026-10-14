@@ -138,6 +138,21 @@ OwnedRange             g_owned[V8_OWNED_RANGES];
 struct SignalSemaphore g_owned_lock;
 volatile BOOL          g_owned_lock_ready = FALSE;
 
+/*
+ * OWNER CHECKS - for a heap scattered over many blocks (PartitionAlloc
+ * reserving super pages one at a time), a predicate instead of ranges.
+ * Published like a range: free function first, predicate last (release);
+ * retired predicate first.
+ */
+struct OwnerCheck
+{
+    V8OwnsFunc owns;   /* nullptr = slot free; written last on add */
+    V8FreeFunc free;
+};
+
+enum { V8_OWNER_CHECKS = 8 };
+OwnerCheck g_checks[V8_OWNER_CHECKS];
+
 inline V8FreeFunc OwnerOf(void *ptr)
 {
     const IPTR p = (IPTR)ptr;
@@ -146,6 +161,13 @@ inline V8FreeFunc OwnerOf(void *ptr)
         const IPTR size = __atomic_load_n(&g_owned[i].size, __ATOMIC_ACQUIRE);
         if (size != 0 && p - g_owned[i].base < size)
             return g_owned[i].free;
+    }
+    for (int i = 0; i < V8_OWNER_CHECKS; i++)
+    {
+        const V8OwnsFunc owns =
+            __atomic_load_n(&g_checks[i].owns, __ATOMIC_ACQUIRE);
+        if (owns != nullptr && owns(ptr))
+            return g_checks[i].free;
     }
     return nullptr;
 }
@@ -297,6 +319,76 @@ extern "C" BOOL V8OwnerRangeRemoveImpl(APTR base)
             __atomic_store_n(&g_owned[i].size, (IPTR)0, __ATOMIC_RELEASE);
             g_owned[i].free = nullptr;
             g_owned[i].base = 0;
+            found = TRUE;
+            break;
+        }
+    }
+
+    ReleaseSemaphore(&g_owned_lock);
+    return found;
+}
+
+/*****************************************************************************
+
+    Register a predicate that says whether a pointer belongs to the heap whose
+    free function is freeFn. Returns FALSE if an argument is NULL, the
+    predicate is already registered, or the table is full.
+
+*****************************************************************************/
+extern "C" BOOL V8OwnerCheckAddImpl(V8OwnsFunc ownsFn, V8FreeFunc freeFn)
+{
+    if (ownsFn == nullptr || freeFn == nullptr)
+        return FALSE;
+
+    if (!OwnedLockInit())
+        return FALSE;
+    ObtainSemaphore(&g_owned_lock);
+
+    int slot = -1;
+    for (int i = 0; i < V8_OWNER_CHECKS; i++)
+    {
+        if (g_checks[i].owns == ownsFn)
+        {
+            ReleaseSemaphore(&g_owned_lock);
+            return FALSE;
+        }
+        if (g_checks[i].owns == nullptr && slot < 0)
+            slot = i;
+    }
+    if (slot < 0)
+    {
+        ReleaseSemaphore(&g_owned_lock);
+        return FALSE;
+    }
+
+    g_checks[slot].free = freeFn;
+    __atomic_store_n(&g_checks[slot].owns, ownsFn, __ATOMIC_RELEASE);
+
+    ReleaseSemaphore(&g_owned_lock);
+    return TRUE;
+}
+
+/*****************************************************************************
+
+    Retire a predicate. Call it before the heap goes away (process exit),
+    after the last pointer from it has been released. Returns FALSE if the
+    predicate is not registered.
+
+*****************************************************************************/
+extern "C" BOOL V8OwnerCheckRemoveImpl(V8OwnsFunc ownsFn)
+{
+    if (!OwnedLockInit())
+        return FALSE;
+    ObtainSemaphore(&g_owned_lock);
+
+    BOOL found = FALSE;
+    for (int i = 0; i < V8_OWNER_CHECKS; i++)
+    {
+        if (ownsFn != nullptr && g_checks[i].owns == ownsFn)
+        {
+            __atomic_store_n(&g_checks[i].owns, (V8OwnsFunc)nullptr,
+                             __ATOMIC_RELEASE);
+            g_checks[i].free = nullptr;
             found = TRUE;
             break;
         }

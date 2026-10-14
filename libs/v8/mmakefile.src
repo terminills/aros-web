@@ -108,6 +108,8 @@ FUNCS := v8allocatorinstall \
     v8allocatorisinstalled \
     v8ownerrangeadd \
     v8ownerrangeremove \
+    v8ownercheckadd \
+    v8ownercheckremove \
     v8initialize \
          v8cleanup \
          v8createisolate \

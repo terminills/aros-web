@@ -16,6 +16,7 @@ extern "C" {
 
 typedef void *(*V8AllocFunc)(size_t size);
 typedef void  (*V8FreeFunc)(void *ptr);
+typedef BOOL  (*V8OwnsFunc)(void *ptr);
 
 /*
  * Install the allocator this library's operator new/delete route through.
@@ -42,6 +43,14 @@ BOOL V8AllocatorIsInstalledImpl(void);
 void V8OwnerRangesInitImpl(void);
 BOOL V8OwnerRangeAddImpl(APTR base, IPTR size, V8FreeFunc freeFn);
 BOOL V8OwnerRangeRemoveImpl(APTR base);
+
+/*
+ * Owner checks: for a heap that is not a few contiguous ranges, a predicate
+ * that says whether a pointer is its own. Implementations of the
+ * V8OwnerCheckAdd/Remove LVOs.
+ */
+BOOL V8OwnerCheckAddImpl(V8OwnsFunc ownsFn, V8FreeFunc freeFn);
+BOOL V8OwnerCheckRemoveImpl(V8OwnsFunc ownsFn);
 
 #ifdef __cplusplus
 }
