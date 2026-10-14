@@ -131,8 +131,12 @@ static struct SignalSemaphore *v8_platform_owners_sem(void)
     }
 }
 
-/* Entries of tasks that have exited stay until their slot is needed: the
-   ETask ID keeps a recycled Task structure from matching a dead entry. */
+/* A task's first platform is the one its threads inherit, as V8 keeps the
+   first platform a process initializes: a Node embedded in a program that
+   already runs V8 installs its own platform on the same task, but only its
+   own calls use it. Entries of tasks that have exited stay until their slot
+   is needed: the ETask ID keeps a recycled Task structure from matching a
+   dead entry. */
 static void v8_platform_record_owner(struct Task *task, void *platform)
 {
     struct SignalSemaphore *sem = v8_platform_owners_sem();
@@ -150,10 +154,8 @@ static void v8_platform_record_owner(struct Task *task, void *platform)
 
         if (o->task == task && o->id == id)
         {
-            if (platform)
+            if (o->platform == V8_PLATFORM_PENDING)
                 o->platform = platform;
-            else
-                o->task = NULL;
             ReleaseSemaphore(sem);
             return;
         }
@@ -208,13 +210,13 @@ static struct v8_platform_owner *v8_platform_find_owner(struct Task *t, ULONG id
 }
 
 /* The nearest recorded task at or above me decides, pending or not. */
-static void *v8_platform_from_chain(struct Task *me, BOOL include_me)
+static void *v8_platform_from_chain(struct Task *me)
 {
     struct Task *chain[V8_PLATFORM_MAXDEPTH + 1];
     ULONG ids[V8_PLATFORM_MAXDEPTH + 1];
     struct SignalSemaphore *sem;
     void *platform = NULL;
-    int depth, i, first = include_me ? 0 : 1;
+    int depth, i;
 
     chain[0] = me;
     ids[0] = GetETaskID(me);
@@ -222,7 +224,7 @@ static void *v8_platform_from_chain(struct Task *me, BOOL include_me)
 
     sem = v8_platform_owners_sem();
     ObtainSemaphoreShared(sem);
-    for (i = first; i < depth && !platform; i++)
+    for (i = 0; i < depth && !platform; i++)
     {
         struct v8_platform_owner *o = v8_platform_find_owner(chain[i], ids[i]);
 
@@ -264,6 +266,9 @@ static void v8_platform_promote_root(struct Task *me, void *platform)
     ReleaseSemaphore(sem);
 }
 
+/* Selects a platform for the calling task only. Node switches to its own
+   platform around every call into V8 and back afterwards; that must not
+   reach the task's threads or the program root. */
 void __aros_v8_set_current_platform(void *platform)
 {
     APTR taskres_base = v8_platform_get_taskres_base();
@@ -271,7 +276,13 @@ void __aros_v8_set_current_platform(void *platform)
 
     if (!__SetTaskStorageSlot_WB(taskres_base, slot, (IPTR)platform))
         abort();
+}
 
+/* V8::InitializePlatform(): the platform a program installs is the one its
+   tasks and their threads resolve. */
+void __aros_v8_install_platform(void *platform)
+{
+    __aros_v8_set_current_platform(platform);
     v8_platform_record_owner(FindTask(NULL), platform);
     v8_platform_promote_root(FindTask(NULL), platform);
 }
@@ -288,12 +299,12 @@ void *__aros_v8_get_current_platform(void)
 
     me = FindTask(NULL);
     if (platform == V8_PLATFORM_PENDING)
-        platform = v8_platform_from_chain(me, TRUE);
+        platform = v8_platform_from_chain(me);
     else
     {
         platform = (APTR)__GetParentTaskStorageSlot_WB(taskres_base, slot);
         if (!platform || platform == V8_PLATFORM_PENDING)
-            platform = v8_platform_from_chain(me, FALSE);
+            platform = v8_platform_from_chain(me);
     }
 
     if (platform == V8_PLATFORM_PENDING)
