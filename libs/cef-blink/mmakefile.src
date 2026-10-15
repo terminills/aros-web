@@ -59,7 +59,7 @@ CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/pthread-abi-aros \
 # loaded natively. Without it the module links with exactly those three
 # symbols undefined.
 CEF_BLINK_USELIBS := stdc++ stdc stdcio posixc pthread m atomic \
-    debug net cybergraphics graphics intuition oop v8 linuxso
+    debug net cybergraphics graphics intuition oop v8 linuxso EGL GL
 
 #MM workbench-libs-cef-blink-public-includes
 CEF_BLINK_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
