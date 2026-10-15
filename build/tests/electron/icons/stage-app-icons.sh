@@ -24,6 +24,8 @@
 #   stage-app-icons.sh <AROS tree> [icon build dir]
 #
 # Environment:
+#   APP_SOURCES directory holding the vscode-aros and github-desktop-aros
+#               checkouts (default: this repository or its parent)
 #   ILBMTOICON  the icon tool (default: <tree>/../tools/ilbmtoicon, i.e. the
 #               build tree's own bin/<arch>/tools)
 #   PRESETS     Gorilla preset icons (default:

@@ -14,7 +14,9 @@ same way (chrome/app/theme/aros/make_workbench_icon.py).
 writes VSCode.png, GitHubDesktop.png and BothApps.png (the two marks side by
 side, for the one-engine-two-apps launcher).  `ilbmtoicon <name>.info.src
 <name>.png <name>.info` turns each into the .info that stage-app-icons.sh
-places in SYS:Applications/Development.
+places in SYS:Applications/Development.  The marks are read from the
+vscode-aros and github-desktop-aros checkouts in $APP_SOURCES, or next to
+this repository.
 """
 
 import os
@@ -28,7 +30,12 @@ OUTLINE = (0x10, 0x10, 0x10)
 SHADOW_ALPHA = 0x60
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GITHUB = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
+REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
+# The directory holding the vscode-aros and github-desktop-aros checkouts:
+# $APP_SOURCES, else this repository or the directory next to it.
+GITHUB = os.environ.get("APP_SOURCES") or next(
+    (d for d in (REPO, os.path.dirname(REPO))
+     if os.path.isdir(os.path.join(d, "vscode-aros"))), REPO)
 
 SOURCES = {
     "VSCode": os.path.join(GITHUB, "vscode-aros", "resources", "linux",
