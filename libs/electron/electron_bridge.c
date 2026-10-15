@@ -48,7 +48,7 @@
 #include "electron_libdefs.h"
 
 #define AROS_ELECTRON_VERSION "0.1.0-aros"
-#define ELECTRON_REQUEST_CAPACITY 8
+#define ELECTRON_REQUEST_CAPACITY 64
 #define ELECTRON_REQUEST_METHOD_SIZE 64
 #define ELECTRON_REQUEST_PAYLOAD_SIZE 2048
 
@@ -1738,6 +1738,7 @@ static LONG electron_queue_request(CONST_STRPTR method, CONST_STRPTR payload)
     if (next_tail == electron_request_head)
     {
         Permit();
+        bug("[ELECTRON] request queue full, '%s' dropped\n", method_text);
         return 20;
     }
     request = &electron_requests[electron_request_tail];
