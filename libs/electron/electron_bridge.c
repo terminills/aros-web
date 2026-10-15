@@ -939,7 +939,7 @@ static const char electron_module_bootstrap[] =
     "this._fullScreen=!!options.fullscreen;"
     "this._simpleFullScreen=!!options.simpleFullscreen;"
     "this._menuBarVisible=options.autoHideMenuBar!==true;"
-    "this._title=String(options.title||'');"
+    "this._title=String(options.title||appName);"
     "this._destroyed=false;"
     "this._visible=options.show!==false;"
     "this._minimized=false;"
@@ -991,6 +991,8 @@ static const char electron_module_bootstrap[] =
     "[String(this.id),preload,...additionalArguments].join('\\t'));"
     /* The constructor options are the window's initial geometry. */
     "this._syncBounds();"
+    "binding.invoke('browser-window.set-title',"
+    "String(this.id)+'\\t'+this._title);"
     "if(this._minimumSize[0]>0||this._minimumSize[1]>0)"
     "binding.invoke('browser-window.set-minimum-size',"
     "[this.id,...this._minimumSize].join('\\t'));"
