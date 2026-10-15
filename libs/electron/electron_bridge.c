@@ -17,12 +17,14 @@
 #include <aros/libcall.h>
 #include <aros/debug.h>
 #include <dos/dos.h>
+#include <libraries/asl.h>
 #include <exec/lists.h>
 #include <exec/memory.h>
 #include <exec/semaphores.h>
 #include <exec/types.h>
 #include <intuition/intuition.h>
 #include <libraries/electron.h>
+#include <proto/asl.h>
 #include <proto/cef.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
@@ -152,6 +154,7 @@ static CONST_STRPTR electron_write_app_stdio(CONST_STRPTR payload)
     return "written";
 }
 static char electron_sync_result[32];
+static char electron_file_result[1024];
 static char electron_screen_result[96];
 
 static char *electron_append_long(char *output, LONG value)
@@ -362,6 +365,106 @@ static CONST_STRPTR electron_show_message_box(CONST_STRPTR payload)
     FreeVec(gadgets);
     FreeVec(copy);
     return (CONST_STRPTR)electron_sync_result;
+}
+
+/* payload: mode ("open", "save" or "directory"), title, default path and
+   AmigaDOS pattern, each URI-encoded and tab-separated.  The answer is
+   "ok\t<path>", "cancel" or "error\t<reason>". */
+static CONST_STRPTR electron_show_file_dialog(CONST_STRPTR payload)
+{
+    struct Library *AslBase;
+    struct FileRequester *requester;
+    char *copy;
+    char *fields[4] = { NULL, NULL, NULL, NULL };
+    char *cursor;
+    char *drawer = NULL;
+    ULONG field_count = 0;
+    ULONG index;
+    BOOL save, directory, chosen;
+    CONST_STRPTR file;
+
+    if (payload == NULL)
+        payload = (CONST_STRPTR)"";
+    copy = AllocVec(strlen((const char *)payload) + 1, MEMF_ANY);
+    if (copy == NULL)
+        return "error\tout of memory";
+    strcpy(copy, (const char *)payload);
+    cursor = copy;
+    fields[field_count++] = cursor;
+    while (*cursor != '\0' && field_count < 4)
+    {
+        if (*cursor == '\t')
+        {
+            *cursor = '\0';
+            fields[field_count++] = cursor + 1;
+        }
+        ++cursor;
+    }
+    while (field_count < 4)
+        fields[field_count++] = (char *)"";
+    for (index = 0; index < 4; ++index)
+        electron_decode_component(fields[index]);
+    save = strcmp(fields[0], "save") == 0;
+    directory = strcmp(fields[0], "directory") == 0;
+
+    file = FilePart((CONST_STRPTR)fields[2]);
+    if (file != (CONST_STRPTR)fields[2])
+    {
+        ULONG length = PathPart((CONST_STRPTR)fields[2]) -
+            (STRPTR)fields[2];
+
+        drawer = AllocVec(length + 1, MEMF_ANY);
+        if (drawer != NULL)
+        {
+            memcpy(drawer, fields[2], length);
+            drawer[length] = '\0';
+        }
+    }
+
+    AslBase = OpenLibrary("asl.library", 39);
+    if (AslBase == NULL)
+    {
+        FreeVec(drawer);
+        FreeVec(copy);
+        return "error\tasl.library is not available";
+    }
+    requester = (struct FileRequester *)AllocAslRequestTags(
+        ASL_FileRequest,
+        ASLFR_TitleText, (IPTR)(fields[1][0] != '\0' ? fields[1] :
+            (save ? "Save" : "Open")),
+        ASLFR_InitialDrawer, (IPTR)(drawer != NULL ? drawer : ""),
+        ASLFR_InitialFile, (IPTR)(directory ? (CONST_STRPTR)"" : file),
+        ASLFR_InitialPattern, (IPTR)(fields[3][0] != '\0' ?
+            fields[3] : "#?"),
+        ASLFR_DoPatterns, fields[3][0] != '\0',
+        ASLFR_DoSaveMode, save,
+        ASLFR_DrawersOnly, directory,
+        ASLFR_RejectIcons, TRUE,
+        TAG_DONE);
+    if (requester == NULL)
+    {
+        CloseLibrary(AslBase);
+        FreeVec(drawer);
+        FreeVec(copy);
+        return "error\tno file requester";
+    }
+    chosen = AslRequestTags(requester, TAG_DONE);
+    if (chosen)
+    {
+        strcpy(electron_file_result, "ok\t");
+        strncpy(electron_file_result + 3, (const char *)requester->fr_Drawer,
+            sizeof(electron_file_result) - 4);
+        electron_file_result[sizeof(electron_file_result) - 1] = '\0';
+        if (!directory && !AddPart((STRPTR)electron_file_result + 3,
+            requester->fr_File, sizeof(electron_file_result) - 3))
+            strcpy(electron_file_result, "error\tpath too long");
+    }
+    FreeAslRequest(requester);
+    CloseLibrary(AslBase);
+    FreeVec(drawer);
+    FreeVec(copy);
+    return chosen ? (CONST_STRPTR)electron_file_result :
+        (CONST_STRPTR)"cancel";
 }
 
 /*
@@ -1499,6 +1602,29 @@ static const char electron_module_bootstrap[] =
     "return [encode(options.title||appName),encode(options.message||''),"
     "encode(options.detail||''),buttons.map(encode).join('\\x1f')].join('\\t');"
     "};"
+    /* ASL has one pattern where Electron has a filter list: the pattern
+       offers the extensions of every filter but "*", and the pattern
+       gadget lets the user widen it. */
+    "const dialogPattern=filters=>{"
+    "if(!Array.isArray(filters))return '';"
+    "const extensions=[];"
+    "for(const filter of filters){"
+    "for(const extension of(filter&&filter.extensions)||[]){"
+    "if(extension==='*')continue;"
+    "if(!extensions.includes(extension))extensions.push(String(extension));"
+    "}"
+    "}"
+    "return extensions.length?'#?.('+extensions.join('|')+')':'';"
+    "};"
+    "const showFileDialog=(mode,options)=>{"
+    "const encode=value=>encodeURIComponent(value===undefined?'':String(value));"
+    "const answer=String(binding.invoke('dialog.show-file-dialog-sync',"
+    "[mode,options.title||'',options.defaultPath||'',"
+    "dialogPattern(options.filters)].map(encode).join('\\t')));"
+    "if(answer.startsWith('ok\\t'))return answer.slice(3);"
+    "if(answer!=='cancel')console.error('[AROS-ELECTRON] file requester: '+answer);"
+    "return undefined;"
+    "};"
     "const dialog=Object.freeze({"
     "showMessageBoxSync:(windowOrOptions,maybeOptions)=>{"
     "const options=normalizeDialogOptions(windowOrOptions,maybeOptions);"
@@ -1509,7 +1635,25 @@ static const char electron_module_bootstrap[] =
     "},"
     "showMessageBox:(windowOrOptions,maybeOptions)=>"
     "Promise.resolve({response:dialog.showMessageBoxSync("
-    "windowOrOptions,maybeOptions),checkboxChecked:false})"
+    "windowOrOptions,maybeOptions),checkboxChecked:false}),"
+    "showOpenDialogSync:(windowOrOptions,maybeOptions)=>{"
+    "const options=normalizeDialogOptions(windowOrOptions,maybeOptions);"
+    "const properties=Array.isArray(options.properties)?options.properties:[];"
+    "const mode=properties.includes('openDirectory')?'directory':'open';"
+    "const path=showFileDialog(mode,options);"
+    "return path===undefined?undefined:[path];"
+    "},"
+    "showOpenDialog:(windowOrOptions,maybeOptions)=>{"
+    "const filePaths=dialog.showOpenDialogSync(windowOrOptions,maybeOptions);"
+    "return Promise.resolve({canceled:!filePaths,filePaths:filePaths||[]});"
+    "},"
+    "showSaveDialogSync:(windowOrOptions,maybeOptions)=>"
+    "showFileDialog('save',normalizeDialogOptions(windowOrOptions,"
+    "maybeOptions))||'',"
+    "showSaveDialog:(windowOrOptions,maybeOptions)=>{"
+    "const filePath=dialog.showSaveDialogSync(windowOrOptions,maybeOptions);"
+    "return Promise.resolve({canceled:!filePath,filePath});"
+    "}"
     "});"
     /* Native events: `protocol\tid\tscheme\turl` from the scheme handler
        factory (answered with protocol.response) and `ipc\twindow\tjson`
@@ -1830,6 +1974,9 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
     if (method != NULL &&
         strcmp(method, "dialog.show-message-box-sync") == 0)
         return electron_show_message_box(payload);
+    if (method != NULL &&
+        strcmp(method, "dialog.show-file-dialog-sync") == 0)
+        return electron_show_file_dialog(payload);
     if (method != NULL &&
         (strcmp(method, "module-load") == 0 ||
         strcmp(method, "module-return") == 0 ||
