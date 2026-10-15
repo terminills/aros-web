@@ -1662,6 +1662,61 @@ static int CEF_CALLBACK on_console_message(
     return 0;
 }
 
+#ifdef ELECTRON_SHELL_WINDOWED
+static void CEF_CALLBACK on_title_change(cef_display_handler_t *self,
+    cef_browser_t *cef_browser, const cef_string_t *title)
+{
+    struct ShellWindow *window = shell_find_window_by_browser(cef_browser);
+    char text[256 * 3 + 1];
+    size_t length = title != NULL ? title->length : 0;
+    size_t i;
+    size_t out = 0;
+
+    (void)self;
+    /* Until the app loads a URL the window shows the engine's own page. */
+    if (window == NULL || window->url_length == 0)
+        return;
+    /* A page without a title reports its URL, which Electron does not
+       make the window title. */
+    for (i = 0; i < window->url_length && window->url[i] != ':'; ++i)
+        ;
+    if (i < window->url_length && length > i &&
+        memcmp(title->str, window->url, (i + 1) * sizeof(cef_char_t)) == 0)
+        return;
+    for (i = 0; i < length && out + 4 < sizeof(text); ++i)
+    {
+        ULONG c = title->str[i];
+
+        if (c >= 0xd800 && c < 0xdc00 && i + 1 < length &&
+            title->str[i + 1] >= 0xdc00 && title->str[i + 1] < 0xe000)
+            c = 0x10000 + ((c - 0xd800) << 10) + (title->str[++i] - 0xdc00);
+        if (c < 0x80)
+            text[out++] = (char)c;
+        else if (c < 0x800)
+        {
+            text[out++] = (char)(0xc0 | (c >> 6));
+            text[out++] = (char)(0x80 | (c & 0x3f));
+        }
+        else if (c < 0x10000)
+        {
+            text[out++] = (char)(0xe0 | (c >> 12));
+            text[out++] = (char)(0x80 | ((c >> 6) & 0x3f));
+            text[out++] = (char)(0x80 | (c & 0x3f));
+        }
+        else
+        {
+            text[out++] = (char)(0xf0 | (c >> 18));
+            text[out++] = (char)(0x80 | ((c >> 12) & 0x3f));
+            text[out++] = (char)(0x80 | ((c >> 6) & 0x3f));
+            text[out++] = (char)(0x80 | (c & 0x3f));
+        }
+    }
+    text[out] = '\0';
+    ElectronPostAppWindowEvent(window->slot, window->id,
+        "page-title-updated", text);
+}
+#endif
+
 static cef_display_handler_t *CEF_CALLBACK get_display_handler(
     cef_client_t *self)
 {
@@ -2034,6 +2089,9 @@ static void initialize_handlers(void)
 
     initialize_base(&display_handler.base, sizeof(display_handler));
     display_handler.on_console_message = on_console_message;
+#ifdef ELECTRON_SHELL_WINDOWED
+    display_handler.on_title_change = on_title_change;
+#endif
 
     initialize_base(&life_span_handler.base, sizeof(life_span_handler));
     life_span_handler.on_after_created = on_after_created;
