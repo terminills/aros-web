@@ -1,0 +1,4 @@
+; GitHub Desktop's switches for the shared Electron engine
+--standard-schemes=vscode-file
+--secure-schemes=vscode-file
+--enable-features=SharedArrayBuffer

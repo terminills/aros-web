@@ -12,6 +12,9 @@
 #   Applications/Development/GitHub Desktop[.info]
 #   Applications/Development/VS Code + GitHub Desktop[.info]
 #                                               both apps, one engine
+#   Prefs/Env-Archive/Electron/Engine/<app>     the switches each app needs
+#                                               from the shared engine, read
+#                                               when the engine starts
 #
 # The apps themselves stay where they are installed (SYS:Developer/VSCode,
 # SYS:Developer/GitHubDesktop) and one SYS:Tools/ElectronShell serves all of
@@ -60,5 +63,13 @@ stage() { # <script name> <icon basename>
 stage "VS Code" VSCode
 stage "GitHub Desktop" GitHubDesktop
 stage "VS Code + GitHub Desktop" BothApps
+
+ENGINE=$TREE/Prefs/Env-Archive/Electron/Engine
+mkdir -p "$ENGINE"
+for app in VSCode GitHubDesktop; do
+    cp -f "$HERE/engine/$app" "$ENGINE/$app"
+    chmod 644 "$ENGINE/$app"
+    echo "  $ENGINE/$app"
+done
 
 echo "staged Workbench launchers in $DST"

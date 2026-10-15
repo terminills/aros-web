@@ -1,0 +1,7 @@
+; VS Code's switches for the shared Electron engine
+--standard-schemes=vscode-file,vscode-webview
+--secure-schemes=vscode-file,vscode-webview
+--cors-schemes=vscode-file,vscode-webview
+--fetch-schemes=vscode-file,vscode-webview
+--service-worker-schemes=vscode-webview
+--enable-features=SharedArrayBuffer

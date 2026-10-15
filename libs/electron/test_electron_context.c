@@ -1533,7 +1533,8 @@ static void declare_scheme_list(const char *list, int options)
     }
 }
 
-static int parse_scheme_switch(const char *arg)
+/* The option bit a scheme switch grants, with its list; -1: not one. */
+static int scheme_switch_options(const char *arg, const char **list)
 {
     static const struct
     {
@@ -1559,10 +1560,53 @@ static int parse_scheme_switch(const char *arg)
 
         if (strncmp(arg, scheme_switches[i].prefix, prefix_length) == 0)
         {
-            declare_scheme_list(arg + prefix_length,
-                scheme_switches[i].options);
+            *list = arg + prefix_length;
+            return scheme_switches[i].options;
+        }
+    }
+    return -1;
+}
+
+static int parse_scheme_switch(const char *arg)
+{
+    const char *list;
+    int options = scheme_switch_options(arg, &list);
+
+    if (options < 0)
+        return 0;
+    declare_scheme_list(list, options);
+    return 1;
+}
+
+/* The first scheme of a switch's list the engine did not declare with that
+   option, copied into missing; 0 when all are. */
+static int scheme_switch_missing(const char *arg, char *missing,
+    size_t size)
+{
+    const char *list;
+    int options = scheme_switch_options(arg, &list);
+
+    if (options <= 0)
+        return 0;
+    while (*list != '\0')
+    {
+        const char *end = strchr(list, ',');
+        size_t length = end != NULL ? (size_t)(end - list) : strlen(list);
+        int slot;
+
+        for (slot = 0; slot < declared_scheme_count; ++slot)
+            if (strlen(declared_schemes[slot].name) == length &&
+                strncmp(declared_schemes[slot].name, list, length) == 0 &&
+                (declared_schemes[slot].options & options) == options)
+                break;
+        if (length > 0 && slot == declared_scheme_count)
+        {
+            snprintf(missing, size, "%.*s", (int)length, list);
             return 1;
         }
+        if (end == NULL)
+            break;
+        list = end + 1;
     }
     return 0;
 }
@@ -2323,6 +2367,224 @@ static char *engine_build_script(const struct EngineRequest *request)
     return buffer.text;
 }
 
+/*
+ * The engine's CEF switches are fixed when it starts, but it serves every
+ * app of the boot.  So it takes the union of its launcher's switches and of
+ * the registry: each installed app leaves the switches it needs from the
+ * engine in ENVARC:Electron/Engine/<app>, one per line.
+ */
+#define ENGINE_REGISTRY_DIR "ENV:Electron/Engine"
+#define MAX_ENGINE_SWITCHES 48
+#define ENABLE_FEATURES_OPTION "--enable-features="
+#define DISABLE_FEATURES_OPTION "--disable-features="
+
+static char *engine_switches[MAX_ENGINE_SWITCHES];
+static int engine_switch_count;
+static char *engine_features[2];
+
+static char *engine_strdup(const char *text, size_t length)
+{
+    char *copy = AllocVec(length + 1, MEMF_ANY);
+
+    if (copy != NULL)
+    {
+        memcpy(copy, text, length);
+        copy[length] = '\0';
+    }
+    return copy;
+}
+
+static int feature_listed(const char *list, const char *name, size_t length)
+{
+    while (list != NULL && *list != '\0')
+    {
+        const char *end = strchr(list, ',');
+        size_t item = end != NULL ? (size_t)(end - list) : strlen(list);
+
+        if (item == length && strncmp(list, name, length) == 0)
+            return 1;
+        if (end == NULL)
+            break;
+        list = end + 1;
+    }
+    return 0;
+}
+
+static void engine_merge_features(int which, const char *list)
+{
+    while (*list != '\0')
+    {
+        const char *end = strchr(list, ',');
+        size_t length = end != NULL ? (size_t)(end - list) : strlen(list);
+
+        if (length > 0 && !feature_listed(engine_features[which], list,
+            length))
+        {
+            size_t old = engine_features[which] != NULL ?
+                strlen(engine_features[which]) : 0;
+            char *merged = AllocVec(old + length + 2, MEMF_ANY);
+
+            if (merged == NULL)
+                return;
+            if (old > 0)
+            {
+                memcpy(merged, engine_features[which], old);
+                merged[old++] = ',';
+                FreeVec(engine_features[which]);
+            }
+            memcpy(merged + old, list, length);
+            merged[old + length] = '\0';
+            engine_features[which] = merged;
+        }
+        if (end == NULL)
+            break;
+        list = end + 1;
+    }
+}
+
+static void engine_add_switch(const char *arg, const char *origin)
+{
+    int i;
+
+    if (arg[0] != '-' || arg[1] != '-' ||
+        strcmp(arg, ENGINE_HOST_OPTION) == 0 ||
+        strncmp(arg, MAIN_SCRIPT_OPTION, sizeof(MAIN_SCRIPT_OPTION) - 1) == 0 ||
+        strncmp(arg, APP_SCRIPT_OPTION, sizeof(APP_SCRIPT_OPTION) - 1) == 0)
+        return;
+    KPrintF("[ELECTRON-ENGINE] switch '%s' from %s\n", arg, origin);
+    if (parse_scheme_switch(arg))
+        return;
+    if (strncmp(arg, ENABLE_FEATURES_OPTION,
+        sizeof(ENABLE_FEATURES_OPTION) - 1) == 0)
+    {
+        engine_merge_features(0, arg + sizeof(ENABLE_FEATURES_OPTION) - 1);
+        return;
+    }
+    if (strncmp(arg, DISABLE_FEATURES_OPTION,
+        sizeof(DISABLE_FEATURES_OPTION) - 1) == 0)
+    {
+        engine_merge_features(1, arg + sizeof(DISABLE_FEATURES_OPTION) - 1);
+        return;
+    }
+    for (i = 0; i < engine_switch_count; ++i)
+        if (strcmp(engine_switches[i], arg) == 0)
+            return;
+    if (engine_switch_count >= MAX_ENGINE_SWITCHES)
+    {
+        KPrintF("[ELECTRON-ENGINE] too many switches, dropping '%s'\n", arg);
+        return;
+    }
+    engine_switches[engine_switch_count] = engine_strdup(arg, strlen(arg));
+    if (engine_switches[engine_switch_count] != NULL)
+        ++engine_switch_count;
+}
+
+static void engine_read_registry_file(const char *name)
+{
+    char path[256];
+    char line[512];
+    BPTR file;
+
+    snprintf(path, sizeof(path), ENGINE_REGISTRY_DIR "/%s", name);
+    file = Open(path, MODE_OLDFILE);
+    if (file == BNULL)
+        return;
+    while (FGets(file, line, sizeof(line)) != NULL)
+    {
+        char *start = line;
+        char *end = line + strlen(line);
+
+        while (*start == ' ' || *start == '\t')
+            ++start;
+        while (end > start && (end[-1] == '\n' || end[-1] == '\r' ||
+            end[-1] == ' ' || end[-1] == '\t'))
+            *--end = '\0';
+        if (*start != '\0' && *start != ';' && *start != '#')
+            engine_add_switch(start, name);
+    }
+    Close(file);
+}
+
+static void engine_read_registry(void)
+{
+    struct FileInfoBlock *fib = AllocDosObject(DOS_FIB, NULL);
+    BPTR dir = Lock(ENGINE_REGISTRY_DIR, SHARED_LOCK);
+
+    if (fib != NULL && dir != BNULL && Examine(dir, fib) &&
+        fib->fib_DirEntryType > 0)
+    {
+        while (ExNext(dir, fib))
+            if (fib->fib_DirEntryType < 0)
+                engine_read_registry_file(fib->fib_FileName);
+    }
+    if (dir != BNULL)
+        UnLock(dir);
+    if (fib != NULL)
+        FreeDosObject(DOS_FIB, fib);
+}
+
+static void engine_tell_launcher(struct EngineRequest *request,
+    const char *text)
+{
+    KPrintF("[ELECTRON-ENGINE] launcher %lu: %s", request->launcher_pid,
+        text);
+    if (request->error != BNULL)
+        Write(request->error, (APTR)text, strlen(text));
+}
+
+/* An app needing a scheme the running engine lacks would come up broken
+   (blank windows, failed loads); it is refused with the remedy instead. */
+static int engine_check_switches(struct EngineRequest *request)
+{
+    char message[512];
+    char missing[ELECTRON_SHELL_MAX_SCHEME_NAME];
+    int i;
+
+    for (i = 1; i < request->argc; ++i)
+    {
+        const char *arg = request->argv[i];
+
+        if (arg == NULL)
+            continue;
+        if (scheme_switch_missing(arg, missing, sizeof(missing)))
+        {
+            snprintf(message, sizeof(message),
+                "ElectronShell: the running Electron engine was started "
+                "without the URL scheme '%s' this app needs (%s).\n"
+                "Put the app's scheme switches in ENVARC:Electron/Engine/"
+                "<app>, one per line, and reboot.\n", missing, arg);
+            engine_tell_launcher(request, message);
+            return 0;
+        }
+        if (strncmp(arg, ENABLE_FEATURES_OPTION,
+            sizeof(ENABLE_FEATURES_OPTION) - 1) == 0)
+        {
+            const char *list = arg + sizeof(ENABLE_FEATURES_OPTION) - 1;
+
+            while (*list != '\0')
+            {
+                const char *end = strchr(list, ',');
+                size_t length = end != NULL ? (size_t)(end - list) :
+                    strlen(list);
+
+                if (length > 0 && !feature_listed(engine_features[0], list,
+                    length))
+                {
+                    snprintf(message, sizeof(message),
+                        "ElectronShell: warning: the running Electron engine "
+                        "was started without the feature '%.*s'.\n",
+                        (int)length, list);
+                    engine_tell_launcher(request, message);
+                }
+                if (end == NULL)
+                    break;
+                list = end + 1;
+            }
+        }
+    }
+    return 1;
+}
+
 static int engine_set_default_url(struct EngineApp *app, const char *url)
 {
     size_t length = url != NULL ? strlen(url) :
@@ -2358,6 +2620,11 @@ static void engine_start_app(struct EngineRequest *request)
     LONG rc;
     int i;
 
+    if (!engine_check_switches(request))
+    {
+        engine_reject(request, RETURN_FAIL);
+        return;
+    }
     for (i = 0; i < MAX_ENGINE_APPS; ++i)
     {
         if (!engine_apps[i].in_use)
@@ -2489,7 +2756,8 @@ static void engine_close_port(void)
 
 static int engine_main(int argc, char **argv)
 {
-    char *cef_argv[argc + 3];
+    char *cef_argv[MAX_ENGINE_SWITCHES + 6];
+    char *features[2] = { NULL, NULL };
     cef_main_args_t main_args;
     cef_settings_t settings;
     cef_window_info_t window_info;
@@ -2500,29 +2768,34 @@ static int engine_main(int argc, char **argv)
     int arg_index;
     LONG rc;
 
+    engine_read_registry();
+    for (arg_index = 1; arg_index < argc; ++arg_index)
+        if (argv[arg_index] != NULL)
+            engine_add_switch(argv[arg_index], "the launcher");
     cef_argv[cef_argc++] = argv[0];
     cef_argv[cef_argc++] = (char *)"--disable-gpu";
     cef_argv[cef_argc++] = (char *)"--disable-gpu-compositing";
-    for (arg_index = 1; arg_index < argc && cef_argc + 1 < argc + 3;
-        ++arg_index)
+    for (arg_index = 0; arg_index < engine_switch_count; ++arg_index)
+        cef_argv[cef_argc++] = engine_switches[arg_index];
+    for (arg_index = 0; arg_index < 2; ++arg_index)
     {
-        if (argv[arg_index] == NULL ||
-            strcmp(argv[arg_index], ENGINE_HOST_OPTION) == 0)
+        const char *option = arg_index == 0 ? ENABLE_FEATURES_OPTION :
+            DISABLE_FEATURES_OPTION;
+        size_t size;
+
+        if (engine_features[arg_index] == NULL)
             continue;
-        if (parse_scheme_switch(argv[arg_index]))
-        {
-            KPrintF("[ELECTRON-CONTEXT] custom scheme switch '%s'\n",
-                argv[arg_index]);
+        size = strlen(option) + strlen(engine_features[arg_index]) + 1;
+        features[arg_index] = AllocVec(size, MEMF_ANY);
+        if (features[arg_index] == NULL)
             continue;
-        }
-        if (argv[arg_index][0] == '-' && argv[arg_index][1] == '-')
-        {
-            cef_argv[cef_argc++] = argv[arg_index];
-            KPrintF("[ELECTRON-CONTEXT] forwarding CEF switch '%s'\n",
-                argv[arg_index]);
-        }
+        snprintf(features[arg_index], size, "%s%s", option,
+            engine_features[arg_index]);
+        cef_argv[cef_argc++] = features[arg_index];
     }
     cef_argv[cef_argc] = NULL;
+    for (arg_index = 1; arg_index < cef_argc; ++arg_index)
+        KPrintF("[ELECTRON-ENGINE] CEF switch '%s'\n", cef_argv[arg_index]);
     main_args.argc = cef_argc;
     main_args.argv = cef_argv;
 
