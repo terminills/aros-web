@@ -77,6 +77,80 @@ static ULONG electron_request_tail;
  * untagged ones, which is every event a single-app process makes).
  */
 static LONG electron_current_slot;
+
+/*
+ * An app's stdout and stderr when its host serves apps for other processes:
+ * the launcher's own DOS handles, written from the host's pump, so the
+ * app's console output reaches the console or file the launcher was given.
+ */
+#define ELECTRON_STDIO_SLOTS 8
+
+static struct
+{
+    LONG slot;
+    BPTR output;
+    BPTR error;
+} electron_app_stdio[ELECTRON_STDIO_SLOTS];
+
+static LONG electron_set_app_stdio(LONG slot, BPTR output, BPTR error)
+{
+    int free_index = -1;
+    int index;
+
+    if (slot <= 0)
+        return 20;
+    Forbid();
+    for (index = 0; index < ELECTRON_STDIO_SLOTS; ++index)
+    {
+        if (electron_app_stdio[index].slot == slot)
+            break;
+        if (electron_app_stdio[index].slot == 0 && free_index < 0)
+            free_index = index;
+    }
+    if (index == ELECTRON_STDIO_SLOTS)
+        index = free_index;
+    if (index >= 0)
+    {
+        if (output == BNULL && error == BNULL)
+            electron_app_stdio[index].slot = 0;
+        else
+            electron_app_stdio[index].slot = slot;
+        electron_app_stdio[index].output = output;
+        electron_app_stdio[index].error = error;
+    }
+    Permit();
+    return index >= 0 || (output == BNULL && error == BNULL) ? 0 : 20;
+}
+
+/* payload: "1\t<text>" for stdout, "2\t<text>" for stderr. */
+static CONST_STRPTR electron_write_app_stdio(CONST_STRPTR payload)
+{
+    BPTR handle = BNULL;
+    const char *text;
+    int index;
+
+    if (payload == NULL || (payload[0] != '1' && payload[0] != '2') ||
+        payload[1] != '\t')
+        return "bad-stream";
+    text = (const char *)payload + 2;
+    Forbid();
+    for (index = 0; index < ELECTRON_STDIO_SLOTS; ++index)
+    {
+        if (electron_current_slot != 0 &&
+            electron_app_stdio[index].slot == electron_current_slot)
+        {
+            handle = payload[0] == '1' ? electron_app_stdio[index].output :
+                electron_app_stdio[index].error;
+            break;
+        }
+    }
+    Permit();
+    if (handle == BNULL)
+        return "no-stream";
+    if (Write(handle, (APTR)text, strlen(text)) < 0)
+        return "write-failed";
+    return "written";
+}
 static char electron_sync_result[32];
 static char electron_screen_result[96];
 
@@ -1772,6 +1846,8 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
             payload != NULL ? (const char *)payload : "");
         return "";
     }
+    if (method != NULL && strcmp(method, "stdio.write") == 0)
+        return electron_write_app_stdio(payload);
     if (method != NULL && strcmp(method, "native.poll") == 0)
         return electron_poll_event();
     if (method != NULL && strcmp(method, "protocol.response") == 0)
@@ -2225,6 +2301,11 @@ AROS_LH1(LONG, ElectronReleaseAppRuntime,
     (void)LIBBASE;
     if (electron_current_slot == slot)
         electron_current_slot = 0;
+    if (slot > 0)
+    {
+        electron_set_app_stdio(slot, BNULL, BNULL);
+        electron_forget_slot(slot);
+    }
     return NodeReleaseRuntimeSlot(slot);
     AROS_LIBFUNC_EXIT
 }
@@ -2301,5 +2382,17 @@ AROS_LH4(LONG, ElectronPostAppWindowEvent,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     return electron_post_app_window_event(slot, id, name, payload);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH3(LONG, ElectronSetAppStdio,
+    AROS_LHA(LONG, slot, D0),
+    AROS_LHA(BPTR, output, D1),
+    AROS_LHA(BPTR, error, D2),
+    LIBBASETYPEPTR, LIBBASE, 39, Electron)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return electron_set_app_stdio(slot, output, error);
     AROS_LIBFUNC_EXIT
 }

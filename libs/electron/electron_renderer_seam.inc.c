@@ -941,6 +941,46 @@ static LONG electron_bind_window_browser(LONG slot, ULONG id,
     return 0;
 }
 
+/*
+ * A released slot is handed to the next app that starts, so nothing the old
+ * app left behind may survive it: its undelivered events (a late 'closed'
+ * would close the new app's window of the same id) and its window records.
+ */
+static void electron_forget_slot(LONG slot)
+{
+    struct ElectronEvent *scan;
+    struct ElectronEvent *next;
+    int index;
+
+    electron_ensure_state();
+    ObtainSemaphore(&electron_event_lock);
+    for (scan = (struct ElectronEvent *)electron_events.mlh_Head;
+         (next = (struct ElectronEvent *)scan->node.mln_Succ) != NULL;
+         scan = next)
+    {
+        if (scan->slot == slot)
+        {
+            Remove((struct Node *)&scan->node);
+            FreeVec(scan->text);
+            FreeVec(scan);
+        }
+    }
+    ReleaseSemaphore(&electron_event_lock);
+
+    for (index = 0; index < ELECTRON_MAX_WINDOWS; ++index)
+    {
+        struct ElectronWindow *window = &electron_windows[index];
+
+        if (window->in_use && window->slot == slot)
+        {
+            if (window->browser != NULL &&
+                electron_active_browser == window->browser)
+                electron_set_active_browser(NULL);
+            electron_release_window(window);
+        }
+    }
+}
+
 static CONST_STRPTR electron_poll_event(void)
 {
     struct ElectronEvent *event;

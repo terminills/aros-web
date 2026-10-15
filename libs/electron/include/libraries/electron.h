@@ -8,6 +8,7 @@
 #define LIBRARIES_ELECTRON_H
 
 #include <exec/types.h>
+#include <dos/bptr.h>
 
 #define ELECTRONNAME "electron.library"
 #define ELECTRONVERSION 1
@@ -69,5 +70,12 @@ LONG ElectronPollAppRequest(STRPTR method, ULONG method_size,
 LONG ElectronBindWindowBrowser(LONG slot, ULONG id, APTR browser);
 LONG ElectronPostAppWindowEvent(LONG slot, ULONG id, CONST_STRPTR name,
     CONST_STRPTR payload);
+
+/*
+ * An app served for another process writes its stdout/stderr to that
+ * process's DOS handles (BNULL, BNULL forgets them; releasing the slot does
+ * too).  The handles stay the caller's.
+ */
+LONG ElectronSetAppStdio(LONG slot, BPTR output, BPTR error);
 
 #endif /* LIBRARIES_ELECTRON_H */
