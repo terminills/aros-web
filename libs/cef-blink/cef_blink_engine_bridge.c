@@ -8,7 +8,9 @@
  */
 
 #include <aros/libcall.h>
+#include <aros/symbolsets.h>
 #include <exec/libraries.h>
+#include <proto/exec.h>
 
 #include <stdlib.h>
 
@@ -51,6 +53,17 @@ int *__errno_location(void)
     return __stdc_geterrnoptr();
 }
 
+static int CEFBlink_InitLib(LIBBASETYPEPTR CEFBlinkBase)
+{
+    InitSemaphore(&CEFBlinkBase->cb_EngineLock);
+    CEFBlinkBase->cb_EngineState = CEFBLINK_ENGINE_UNINITIALIZED;
+    CEFBlinkBase->cb_EngineWasShutDown = FALSE;
+    CEFBlinkBase->cb_EngineOwner = NULL;
+    return TRUE;
+}
+
+ADD2INITLIB(CEFBlink_InitLib, 0)
+
 AROS_LH1(LONG, CEFBlinkVersionInfo,
     AROS_LHA(LONG, entry, D0),
     LIBBASETYPEPTR, LIBBASE, 5, CEFBlink)
@@ -90,10 +103,34 @@ AROS_LH4(LONG, CEFBlinkInitialize,
     AROS_LHA(APTR, sandbox_info, A3),
     LIBBASETYPEPTR, LIBBASE, 8, CEFBlink)
 {
+    LONG rc;
+
     AROS_LIBFUNC_INIT
-    (void)LIBBASE;
-    return (LONG)cef_engine_initialize(args, settings, application,
+
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
+    if (LIBBASE->cb_EngineState == CEFBLINK_ENGINE_RUNNING)
+    {
+        ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+        return CEFBLINK_ENGINE_RUNNING;
+    }
+    if (LIBBASE->cb_EngineWasShutDown)
+    {
+        ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+        return 0;
+    }
+    LIBBASE->cb_EngineState = CEFBLINK_ENGINE_INITIALIZING;
+    LIBBASE->cb_EngineOwner = FindTask(NULL);
+    rc = (LONG)cef_engine_initialize(args, settings, application,
         sandbox_info);
+    if (rc != 0)
+        LIBBASE->cb_EngineState = CEFBLINK_ENGINE_RUNNING;
+    else
+    {
+        LIBBASE->cb_EngineState = CEFBLINK_ENGINE_UNINITIALIZED;
+        LIBBASE->cb_EngineOwner = NULL;
+    }
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+    return rc;
     AROS_LIBFUNC_EXIT
 }
 
@@ -101,8 +138,19 @@ AROS_LH0(void, CEFBlinkShutdown,
     LIBBASETYPEPTR, LIBBASE, 9, CEFBlink)
 {
     AROS_LIBFUNC_INIT
-    (void)LIBBASE;
+
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
+    if (LIBBASE->cb_EngineState != CEFBLINK_ENGINE_RUNNING ||
+        LIBBASE->cb_EngineOwner != FindTask(NULL))
+    {
+        ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+        return;
+    }
+    LIBBASE->cb_EngineState = CEFBLINK_ENGINE_SHUTTING_DOWN;
     cef_engine_shutdown();
+    LIBBASE->cb_EngineWasShutDown = TRUE;
+    LIBBASE->cb_EngineOwner = NULL;
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
     AROS_LIBFUNC_EXIT
 }
 

@@ -12,6 +12,9 @@
 #define ELECTRONNAME "electron.library"
 #define ELECTRONVERSION 1
 
+/* ElectronInitializeCEF() result: the resident engine is already running. */
+#define ELECTRON_CEF_ENGINE_RUNNING 2
+
 /*
  * Capabilities describe which external native runtimes this adapter resolved.
  * They are intentionally independent: later embedders must not assume that a

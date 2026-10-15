@@ -16,4 +16,7 @@
 #define CEFNAME "cef.library"
 #define CEFVERSION 1
 
+/* CEFInitialize() result: the resident engine is already running. */
+#define CEF_INITIALIZE_ENGINE_RUNNING 2
+
 #endif /* LIBRARIES_CEF_H */
