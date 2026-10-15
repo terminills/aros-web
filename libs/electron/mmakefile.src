@@ -22,6 +22,8 @@ CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
 CEF_HEADERS := $(CEF_SOURCE)/cef
 CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/includes
 
+CHROME_VERSION_DEFS := $(shell sed -n 's/^\(MAJOR\|MINOR\|BUILD\|PATCH\)=\([0-9]*\)$$/-DAROS_CHROME_\1=\2/p' $(CHROMIUM_SRC)/chrome/VERSION 2>/dev/null)
+
 ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 
 #MM workbench-libs-electron-public-includes
@@ -34,7 +36,7 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     modname=electron modtype=library \
     conffile=electron.conf \
     files=electron_bridge \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE) $(CHROME_VERSION_DEFS)" \
     uselibs="node cef v8 intuition dos"
 
 #MM workbench-libs-electron-test : workbench-libs-electron

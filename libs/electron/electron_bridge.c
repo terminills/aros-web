@@ -8,6 +8,12 @@
  * independently proven node.library, cef.library, or v8.library contracts.
  */
 
+#ifdef AROS_CHROME_MAJOR
+#define AROS_CHROME_STR2(x) #x
+#define AROS_CHROME_STR(x) AROS_CHROME_STR2(x)
+#define AROS_CHROME_VERSION AROS_CHROME_STR(AROS_CHROME_MAJOR) "." AROS_CHROME_STR(AROS_CHROME_MINOR) "." AROS_CHROME_STR(AROS_CHROME_BUILD) "." AROS_CHROME_STR(AROS_CHROME_PATCH)
+#endif
+
 #include <aros/libcall.h>
 #include <aros/debug.h>
 #include <dos/dos.h>
@@ -309,6 +315,9 @@ static const char electron_module_bootstrap[] =
     "process.on('unhandledRejection',reason=>"
     "binding.invoke('unhandled-rejection',describeError(reason)));"
     "if(!process.versions.electron)process.versions.electron='0.1.0-aros';"
+#ifdef AROS_CHROME_MAJOR
+    "if(!process.versions.chrome)process.versions.chrome='" AROS_CHROME_VERSION "';"
+#endif
     "if(!process.type)process.type='browser';"
     "if(!process.resourcesPath)process.resourcesPath=process.cwd();"
     "process.env.VSCODE_HANDLES_SIGPIPE='1';"
@@ -799,6 +808,7 @@ static const char electron_module_bootstrap[] =
     "}"
     "isDestroyed(){return this._window._destroyed;}"
     "loadURL(url){return this._window.loadURL(url);}"
+    "loadFile(filePath,options){return this._window.loadFile(filePath,options);}"
     "getURL(){return this._url;}"
     "getTitle(){return this._window._title;}"
     "send(channel,...args){"
@@ -912,6 +922,20 @@ static const char electron_module_bootstrap[] =
     "[this.id,...this._minimumSize].join('\\t'));"
     "app.emit('browser-window-created',{},this);"
     "app.emit('web-contents-created',{},this.webContents);"
+    "}"
+    "loadFile(filePath,options){"
+    "let p=String(filePath).replace(/\\\\/g,'/');"
+    "if(!/^[^/:]+:/.test(p)&&p[0]!=='/'){"
+    "const cwd=String(process.cwd());"
+    "p=cwd+(/[:/]$/.test(cwd)?'':'/')+p.replace(/^\\.\\//,'');"
+    "}"
+    "const enc=encodeURI(p).replace(/[?#]/g,encodeURIComponent);"
+    "let url=(enc[0]==='/'?'file://':'file:///')+enc;"
+    "const o=options||{};"
+    "if(o.query)url+='?'+new URLSearchParams(o.query).toString();"
+    "else if(o.search)url+=(String(o.search)[0]==='?'?'':'?')+o.search;"
+    "if(o.hash)url+=(String(o.hash)[0]==='#'?'':'#')+o.hash;"
+    "return this.loadURL(url);"
     "}"
     "loadURL(url){"
     "this.webContents._url=String(url);"
