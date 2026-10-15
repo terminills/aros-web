@@ -23,11 +23,15 @@
 #include <exec/ports.h>
 #include <exec/tasks.h>
 #include <exec/types.h>
+#include <libraries/electron.h>
 #include <proto/debug.h>
 #include <proto/dos.h>
 #include <proto/electron.h>
 #include <proto/exec.h>
 #ifdef ELECTRON_SHELL_WINDOWED
+#include <dos/dostags.h>
+#include <dos/var.h>
+#include <exec/lists.h>
 #include <intuition/intuition.h>
 #include <intuition/screens.h>
 #include <proto/intuition.h>
@@ -88,35 +92,74 @@ static void shell_log(const char *format, ...)
 #define APP_CLOSE_GRACE_TICKS 3000
 #define SHUTDOWN_DRAIN_TICKS 200
 #define MAIN_SCRIPT_OPTION "--main-script="
+#ifdef ELECTRON_SHELL_WINDOWED
 /*
- * A second (third, ...) Electron app hosted by this same process.
- *
- * CEF keeps one browser context and one UI thread per process, so two apps
- * started as two AROS processes cannot share the engine - the second one
- * page-faults inside cef-blink.library while the first keeps its window.
- * Hosting them together is CEF's own model: one
- * CefInitialize, one UI thread, a window and a Node runtime each. Each extra
- * app gets a runtime slot from node.library and its turn in the pump.
+ * One engine per boot.  cef-blink.library is resident and CEF can be
+ * initialised once in it, so every ElectronShell after the first must reuse
+ * the running engine.  The engine is its own process (ENGINE_HOST_OPTION),
+ * owning CEF's UI thread, the windows and every app's Node runtime slot.
+ * Each ElectronShell is a launcher: it sends its app to the engine port,
+ * waits for the app's exit code and exits with it.
  */
 #define APP_SCRIPT_OPTION "--app-script="
+#define ENGINE_HOST_OPTION "--engine-host"
+#define ENGINE_PORT_NAME "ElectronShell.engine"
+#define ENGINE_REQUEST_MAGIC 0x45534531UL
+#define ENGINE_RUN_APP 1
+#define ENGINE_CANCEL 2
 #define MAX_EXTRA_APPS 4
+#define MAX_ENGINE_APPS 8
+#define ENGINE_LIVENESS_TICKS 50
+#define ENGINE_START_TIMEOUT_TICKS 3000
+#define APP_CANCELLED_CODE 10
 
-struct ExtraApp
+struct EngineRequest
 {
-    const char *path;
-    LONG slot;
-    int attached;
-    int exit_requested;         /* app.exit seen; windows closing */
-    LONG exit_code;
-    int finished;               /* runtime detached, slot released */
+    struct Message msg;
+    ULONG magic;
+    LONG kind;
+    ULONG launcher_pid;
+    LONG app_index;             /* 0 = the main script, 1.. = --app-script */
+    const char *main_script;    /* NULL: the built-in probe script */
+    const char *url;            /* command URL, or NULL */
+    int argc;
+    char **argv;
+    const char *env;            /* local variables, "name\0value\0...\0" */
+    BPTR current_dir;           /* the engine owns it once received */
+    BPTR output;                /* the launcher's, written while it waits */
+    BPTR error;
+    LONG result;
 };
 
-static struct ExtraApp extra_apps[MAX_EXTRA_APPS];
-static int extra_app_count;
-/* The primary app asked to exit; the process follows once no extra app is
-   left. */
-static int primary_exit_requested;
-static ULONG primary_exit_tick;
+/* The engine's app registry: one entry per app attached to a runtime slot. */
+struct EngineApp
+{
+    int in_use;
+    LONG slot;
+    LONG index;
+    struct EngineRequest *request;
+    ULONG launcher_pid;
+    int launcher_gone;
+    BPTR current_dir;
+    struct DateStamp started;
+    ULONG start_tick;
+    int probe_mode;
+    cef_char_t *default_url;
+    size_t default_url_length;
+    int has_window;
+    int first_window_seen;
+    ULONG first_window_tick;
+    int windows_gone;
+    ULONG windows_gone_tick;
+    int exit_requested;
+    ULONG exit_tick;
+    LONG exit_code;
+};
+
+static struct EngineApp engine_apps[MAX_ENGINE_APPS];
+static int engine_app_count;
+static struct MsgPort *engine_port;
+#endif
 static cef_app_t app;
 static cef_client_t client;
 static cef_display_handler_t display_handler;
@@ -133,18 +176,12 @@ static struct MsgPort *ui_pump_port;
 static struct Message ui_pump_message;
 static int browser_closed;
 static int close_requested;
-static int exit_requested;
-static LONG requested_exit_code;
 static int node_attached;
 static int node_detached;
 static int node_task_mismatch;
 static int node_marker_seen;
 static int completion_queued;
 static int external_url_mode;
-/* --main-script= runs the script as the application: no probe tick cap, no
-   auto-close after first paint, exit when the script asks (app.exit) or
-   its last window has been gone for APP_CLOSE_GRACE_TICKS. */
-static int app_mode;
 static ULONG browser_closed_tick;
 static ULONG node_pump_ticks;
 static int first_paint;
@@ -181,9 +218,7 @@ static cef_char_t test_url[] =
     u"electron.library.</p>"
     u"<div class='ok'>Shared CEF + shared Node + shared V8</div>"
     u"</main></body></html>";
-static cef_char_t command_url[2048];
 static cef_char_t window_title[] = u"AROS Electron Shell";
-static unsigned char command_node_script[4096];
 #else
 static cef_char_t test_url[] =
     u"data:text/html,<html><body>AROS Electron Node Context</body></html>";
@@ -966,6 +1001,8 @@ static void shell_request_window_close(struct ShellWindow *window)
     if (window->close_requested)
         return;
     window->close_requested = 1;
+    if (window->browser == NULL && window->creating)
+        return;
     if (window->browser == NULL)
     {
         /* Never got a browser (creation failed, or closed before it
@@ -1012,103 +1049,150 @@ static void shell_request_slot_windows_close(LONG slot)
             shell_request_window_close(&shell_windows[i]);
 }
 
-static struct ExtraApp *shell_find_extra_app(LONG slot)
+static struct EngineApp *engine_find_app(LONG slot)
 {
     int i;
 
-    for (i = 0; i < extra_app_count; ++i)
-        if (extra_apps[i].attached && extra_apps[i].slot == slot)
-            return &extra_apps[i];
+    if (slot <= 0)
+        return NULL;
+    for (i = 0; i < MAX_ENGINE_APPS; ++i)
+        if (engine_apps[i].in_use && engine_apps[i].slot == slot)
+            return &engine_apps[i];
     return NULL;
 }
 
-/* Extra apps still running a Node runtime. */
-static int shell_live_extra_app_count(void)
+/*
+ * The registry just emptied.  The engine stays initialised and idle: CEF can
+ * only be initialised again in this resident image once cef-blink restores
+ * its pristine data, so a full lights-out (CEF shutdown, state back to
+ * Uninitialized) belongs here when it can.
+ */
+static void engine_lights_out(void)
 {
-    int count = 0;
-    int i;
-
-    for (i = 0; i < extra_app_count; ++i)
-        if (extra_apps[i].attached && !extra_apps[i].finished)
-            ++count;
-    return count;
+    KPrintF("[ELECTRON-ENGINE] registry empty, engine idle (CEF stays "
+        "initialised)\n");
 }
 
-/*
- * Ends one extra app: its windows are gone, so detach its Node runtime and
- * give the slot back. The process goes on with whatever apps remain - a
- * GitHub Desktop quit must not take VS Code with it. Node events
- * the seam still posts to the released slot ('closed' for a late
- * on_before_close) go to a queue nothing drains, which is harmless.
- */
-static void shell_finish_extra_app(struct ExtraApp *extra)
+static void engine_request_app_exit(struct EngineApp *app, LONG code)
 {
-    if (extra->finished)
+    if (app->exit_requested)
         return;
-    extra->finished = 1;
-    if (ElectronSelectAppRuntime(extra->slot) == 0)
-    {
-        ElectronDetachNodeEmbedder();
-        ElectronSelectAppRuntime(0);
-    }
-    ElectronReleaseAppRuntime(extra->slot);
-    KPrintF("[ELECTRON-CONTEXT] app slot %ld exited code=%ld, %ld app(s) "
-        "still running\n", extra->slot, extra->exit_code,
-        (LONG)(shell_live_extra_app_count() +
-            (node_attached && !node_detached ? 1 : 0)));
+    app->exit_requested = 1;
+    app->exit_code = code;
+    app->exit_tick = pump_tick;
+    shell_request_slot_windows_close(app->slot);
 }
 
 /*
- * The primary app is done: its windows are closed, its runtime comes down
- * now rather than at process end, and the process itself ends when the last
- * extra app has gone. Its exit code stays the process's.
+ * Ends one app: its Node runtime is detached, its slot released, its windows
+ * (if any still open) no longer belong to a slot the next app may get, and
+ * its launcher gets the exit code - unless the launcher is gone.
  */
-static void shell_finish_primary_app(void)
+static void engine_finish_app(struct EngineApp *app, LONG code)
 {
-    if (node_attached && !node_detached)
-    {
-        ElectronSelectAppRuntime(0);
-        ElectronDetachNodeEmbedder();
-        node_detached = 1;
-    }
-    KPrintF("[ELECTRON-CONTEXT] primary app exited code=%ld, %ld extra "
-        "app(s) still running\n", requested_exit_code,
-        (LONG)shell_live_extra_app_count());
-    if (shell_live_extra_app_count() == 0)
-        exit_requested = 1;
-}
-
-/* Runs once per service pass: apps whose exit is pending finish as soon as
-   their last window has closed. */
-static void shell_finish_exited_apps(void)
-{
+    BPTR old_dir = CurrentDir(app->current_dir);
     int i;
 
-    for (i = 0; i < extra_app_count; ++i)
+    if (ElectronSelectAppRuntime(app->slot) == 0)
     {
-        struct ExtraApp *extra = &extra_apps[i];
+        ElectronDetachNodeEmbedder();
+        ElectronSelectAppRuntime(0);
+    }
+    CurrentDir(old_dir);
+    for (i = 0; i < MAX_SHELL_WINDOWS; ++i)
+    {
+        struct ShellWindow *window = &shell_windows[i];
 
-        if (extra->attached && extra->exit_requested && !extra->finished &&
-            shell_slot_window_count(extra->slot) == 0)
-            shell_finish_extra_app(extra);
+        if (window->in_use && window->slot == app->slot)
+        {
+            shell_request_window_close(window);
+            window->slot = -1;
+        }
     }
-    if (primary_exit_requested && !exit_requested &&
-        shell_slot_window_count(0) == 0)
+    ElectronReleaseAppRuntime(app->slot);
+    if (app->current_dir != BNULL)
+        UnLock(app->current_dir);
+    FreeVec(app->default_url);
+    --engine_app_count;
+    KPrintF("[ELECTRON-ENGINE] registry -app slot=%ld index=%ld launcher=%lu "
+        "code=%ld%s count=%ld\n", app->slot, app->index, app->launcher_pid,
+        code, app->launcher_gone ? " (launcher gone, no reply)" : "",
+        (LONG)engine_app_count);
+    if (!app->launcher_gone)
     {
-        if (node_attached && !node_detached)
-            shell_finish_primary_app();
-        else if (shell_live_extra_app_count() == 0)
-            exit_requested = 1;
+        app->request->result = code;
+        ReplyMsg(&app->request->msg);
     }
-    else if (primary_exit_requested && !exit_requested &&
-        pump_tick > primary_exit_tick + CLOSE_TIMEOUT_TICKS)
+    memset(app, 0, sizeof(*app));
+    if (engine_app_count == 0)
+        engine_lights_out();
+}
+
+/* Runs once per service pass: the per-app exit rules and launcher liveness. */
+static void engine_service_apps(void)
+{
+    int check_launchers = (pump_tick % ENGINE_LIVENESS_TICKS) == 0;
+    int i;
+
+    for (i = 0; i < MAX_ENGINE_APPS; ++i)
     {
-        /* A window that never reports on_before_close must not keep the
-           process alive forever; the close loop below the pump drains it. */
-        KPrintF("[ELECTRON-CONTEXT] primary app.exit: %ld window(s) still "
-            "open after %ld ticks, exiting anyway\n",
-            (LONG)shell_slot_window_count(0), (LONG)CLOSE_TIMEOUT_TICKS);
-        exit_requested = 1;
+        struct EngineApp *app = &engine_apps[i];
+        int windows;
+
+        if (!app->in_use)
+            continue;
+        if (check_launchers && !app->launcher_gone &&
+            FindTaskByPID(app->launcher_pid) == NULL)
+        {
+            KPrintF("[ELECTRON-ENGINE] launcher %lu of slot %ld is gone\n",
+                app->launcher_pid, app->slot);
+            app->launcher_gone = 1;
+            engine_request_app_exit(app, RETURN_FAIL);
+        }
+        windows = shell_slot_window_count(app->slot);
+        if (windows > 0)
+        {
+            app->has_window = 1;
+            app->windows_gone = 0;
+        }
+        if (app->exit_requested)
+        {
+            if (windows == 0)
+                engine_finish_app(app, app->exit_code);
+            else if (pump_tick > app->exit_tick + CLOSE_TIMEOUT_TICKS)
+            {
+                KPrintF("[ELECTRON-ENGINE] slot %ld: %ld window(s) still "
+                    "open %ld ticks after exit, finishing anyway\n",
+                    app->slot, (LONG)windows, (LONG)CLOSE_TIMEOUT_TICKS);
+                engine_finish_app(app, app->exit_code);
+            }
+            continue;
+        }
+        if (app->probe_mode)
+        {
+            if (node_marker_seen && app->first_window_seen &&
+                pump_tick > app->first_window_tick + CLOSE_AFTER_PAINT_TICKS)
+                engine_request_app_exit(app, RETURN_OK);
+            else if (pump_tick > app->start_tick + CREATE_TIMEOUT_TICKS)
+                engine_request_app_exit(app, RETURN_FAIL);
+            continue;
+        }
+        if (app->has_window && windows == 0)
+        {
+            if (!app->windows_gone)
+            {
+                app->windows_gone = 1;
+                app->windows_gone_tick = pump_tick;
+            }
+            else if (pump_tick > app->windows_gone_tick +
+                APP_CLOSE_GRACE_TICKS)
+            {
+                KPrintF("[ELECTRON-ENGINE] slot %ld quit without app.exit "
+                    "(last window closed %ld ticks ago)\n", app->slot,
+                    (LONG)(pump_tick - app->windows_gone_tick));
+                engine_finish_app(app, RETURN_OK);
+            }
+        }
     }
 }
 
@@ -1206,8 +1290,7 @@ static void shell_navigate_window(struct ShellWindow *window)
 }
 
 static void service_native_window_requests(cef_window_info_t *window_info,
-    cef_browser_settings_t *browser_settings,
-    cef_char_t *browser_url, size_t browser_url_length)
+    cef_browser_settings_t *browser_settings)
 {
     char method[64];
     char payload[2048];
@@ -1218,9 +1301,16 @@ static void service_native_window_requests(cef_window_info_t *window_info,
         payload, sizeof(payload), &slot)) > 0)
     {
         struct ShellWindow *window = NULL;
+        struct EngineApp *app = engine_find_app(slot);
 
         KPrintF("[ELECTRON-CONTEXT] native request slot=%ld method='%s' "
             "payload='%s'\n", slot, method, payload);
+        if (app == NULL)
+        {
+            KPrintF("[ELECTRON-ENGINE] dropped request of finished slot "
+                "%ld\n", slot);
+            continue;
+        }
         if (strncmp(method, "browser-window.", 15) == 0)
         {
             /* Every browser-window request names its window first. */
@@ -1261,31 +1351,17 @@ static void service_native_window_requests(cef_window_info_t *window_info,
             shell_request_window_close(window);
         else if (strcmp(method, "app.exit") == 0)
         {
-            /* app.exit ends the app that asked, not the process: its
-               windows close, then shell_finish_exited_apps() takes its
-               runtime down. The process ends with its last app; the exit
-               status is the primary app's. */
+            /* app.exit ends the app that asked: its windows close, then
+               engine_service_apps() finishes it and replies to its
+               launcher. */
             LONG code = strtol(payload, NULL, 10);
-            struct ExtraApp *extra = shell_find_extra_app(slot);
 
             KPrintF("[ELECTRON-CONTEXT] app.exit requested by slot %ld "
                 "code=%ld\n", slot, code);
-            if (extra != NULL)
-            {
-                extra->exit_requested = 1;
-                extra->exit_code = code;
-            }
-            else
-            {
-                requested_exit_code = code;
-                primary_exit_requested = 1;
-                primary_exit_tick = pump_tick;
-            }
-            if (shell_slot_window_count(slot) > 0)
-                shell_request_slot_windows_close(slot);
+            engine_request_app_exit(app, code);
         }
     }
-    shell_finish_exited_apps();
+    engine_service_apps();
 
     {
         int i;
@@ -1296,28 +1372,44 @@ static void service_native_window_requests(cef_window_info_t *window_info,
 
             if (window->in_use && window->create_requested)
             {
+                struct EngineApp *owner = engine_find_app(window->slot);
+
                 window->create_requested = 0;
-                if (window->browser == NULL && !window->creating)
+                if (owner != NULL && window->browser == NULL &&
+                    !window->creating)
                     shell_create_window(window, window_info,
-                        browser_settings, browser_url, browser_url_length);
+                        browser_settings, owner->default_url,
+                        owner->default_url_length);
             }
         }
     }
     shell_sync_all_window_geometry();
 }
 
-static void pump_node_on_main_task(void)
+/* Each app's Node runs in its own slot, in its launcher's current
+   directory. */
+static void engine_pump_apps(void)
 {
-    LONG rc;
+    int probe_apps = 0;
+    int i;
 
-    if (!node_attached || node_detached)
-        return;
-    rc = ElectronPumpNodeEmbedder();
-    ++node_pump_ticks;
-    if ((node_pump_ticks & 7UL) == 0)
-        KPrintF("[ELECTRON-CONTEXT] main Node pump=%lu rc=%ld\n",
-            node_pump_ticks, rc);
-    if (!node_marker_seen && marker_exists())
+    for (i = 0; i < MAX_ENGINE_APPS; ++i)
+    {
+        struct EngineApp *app = &engine_apps[i];
+        BPTR old_dir;
+
+        if (!app->in_use)
+            continue;
+        probe_apps |= app->probe_mode;
+        old_dir = CurrentDir(app->current_dir);
+        if (ElectronSelectAppRuntime(app->slot) == 0)
+        {
+            ElectronPumpNodeEmbedder();
+            ElectronSelectAppRuntime(0);
+        }
+        CurrentDir(old_dir);
+    }
+    if (probe_apps && !node_marker_seen && marker_exists())
         node_marker_seen = 1;
 }
 #endif
@@ -1689,9 +1781,23 @@ static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
                 created_browser->get_identifier(created_browser);
             ElectronBindWindowBrowser(window->slot, window->id,
                 created_browser);
+            {
+                struct EngineApp *owner = engine_find_app(window->slot);
+
+                if (owner != NULL && !owner->first_window_seen)
+                {
+                    owner->first_window_seen = 1;
+                    owner->first_window_tick = pump_tick;
+                }
+            }
             KPrintF("[ELECTRON-CONTEXT] BrowserWindow %ld/%lu bound to "
                 "browser %p identifier=%ld\n", window->slot, window->id,
                 created_browser, (LONG)window->browser_identifier);
+            if (window->close_requested)
+            {
+                window->close_requested = 0;
+                shell_request_window_close(window);
+            }
         }
         else
         {
@@ -1750,7 +1856,7 @@ static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
     }
     /* The script's BrowserWindow learns it is gone from here ('closed',
        then 'window-all-closed' on the app once no window is left). */
-    if (app_mode)
+    if (slot > 0)
         ElectronPostAppWindowEvent(slot, id, "closed", "");
 #else
     (void)self;
@@ -1928,141 +2034,6 @@ static int ensure_profile_directory(CONST_STRPTR path)
     return 1;
 }
 
-#ifdef ELECTRON_SHELL_WINDOWED
-/*
- * Append one command-line argument to the process.argv literal being built
- * in command_node_script.  Returns the new length, or 0 if it does not fit.
- */
-static size_t append_node_argv_entry(size_t length, const char *argument)
-{
-    size_t i;
-
-    if (length + 3 >= sizeof(command_node_script))
-        return 0;
-    command_node_script[length++] = ',';
-    command_node_script[length++] = '\'';
-    for (i = 0; argument[i] != '\0'; ++i)
-    {
-        if (length + 3 >= sizeof(command_node_script))
-            return 0;
-        if (argument[i] == '\'' || argument[i] == '\\')
-            command_node_script[length++] = '\\';
-        command_node_script[length++] = (unsigned char)argument[i];
-    }
-    command_node_script[length++] = '\'';
-    return length;
-}
-
-/*
- * Electron hands the whole command line to the main script as process.argv
- * (VS Code's --force-disable-user-env, --disable-extensions, a folder to
- * open...), so forward every argument the shell did not consume itself: the
- * main-script option and the custom-scheme switches are ours.
- *
- * `electron <app> ...` also exposes the app directory as the first
- * non-option entry, and VS Code's dev-mode argv parser
- * (parseMainProcessArgv: stripAppPath) REMOVES the first non-option entry -
- * with no app path present it drops every argument instead.  So the main
- * script's directory goes in first, exactly where Electron puts it.
- */
-static int make_node_main_script(const char *path, LONG slot, int argc,
-    char **argv)
-{
-    static const char prefix[] =
-        "process.argv=['AROS-Electron','--no-sandbox',"
-        "'--disable-gpu','--disable-gpu-compositing'";
-    static const char argv_end[] = "];";
-    static const char middle[] =
-        "process.env.VSCODE_DEV='1';"
-        "process._rawDebug('[ELECTRON-MODULE] loading main entry "
-        MAIN_SCRIPT_OPTION "');"
-        "const __arosElectronMain='";
-    /*
-     * A synchronous throw from the main script never reaches the module
-     * bootstrap's uncaughtException hook (it leaves LoadEnvironment directly)
-     * and node.library only reports it through NodeBridgeLog(), which is
-     * compiled out of a non-debug tree - so it came back as a bare rc=20.
-     * Report it through the bootstrap's console.error hook (the [ELECTRON-JS]
-     * line in the debug log), then rethrow so the attach fails as before.
-     */
-    static const char suffix[] =
-        "';const __arosRequire=require('module').createRequire("
-        "__arosElectronMain);"
-        "globalThis.__arosElectronMainModuleRequest=__arosElectronMain;"
-        "try{__arosRequire(__arosElectronMain);}catch(e){"
-        "console.error('[ELECTRON-MODULE] main threw: '+"
-        "((e&&e.stack)||e));throw e;}";
-    const size_t prefix_length = sizeof(prefix) - 1;
-    const size_t argv_end_length = sizeof(argv_end) - 1;
-    const size_t middle_length = sizeof(middle) - 1;
-    const size_t suffix_length = sizeof(suffix) - 1;
-    const size_t path_length = strlen(path);
-    char slot_env[sizeof("process.env.ELECTRON_APP_SLOT='';") + 20];
-    size_t length = prefix_length;
-    int arg_index;
-
-    if (path_length == 0 || strchr(path, '\'') != NULL ||
-        prefix_length >= sizeof(command_node_script))
-        return 0;
-
-    memcpy(command_node_script, prefix, prefix_length);
-    {
-        /* App directory = the main script path up to its last separator. */
-        char app_path[512];
-        size_t app_length = path_length;
-
-        while (app_length > 0 && path[app_length - 1] != '/' &&
-            path[app_length - 1] != ':')
-            --app_length;
-        if (app_length == 0 || app_length >= sizeof(app_path))
-            return 0;
-        memcpy(app_path, path, app_length);
-        app_path[app_length] = '\0';
-        length = append_node_argv_entry(length, app_path);
-        if (length == 0)
-            return 0;
-        KPrintF("[ELECTRON-CONTEXT] process.argv app path '%s'\n", app_path);
-    }
-    for (arg_index = 1; arg_index < argc; ++arg_index)
-    {
-        if (argv[arg_index] == NULL || argv[arg_index][0] == '\0')
-            continue;
-        if (strncmp(argv[arg_index], MAIN_SCRIPT_OPTION,
-            sizeof(MAIN_SCRIPT_OPTION) - 1) == 0)
-            continue;
-        if (argv[arg_index][0] == '-' && argv[arg_index][1] == '-' &&
-            strstr(argv[arg_index], "-schemes=") != NULL)
-            continue;
-        length = append_node_argv_entry(length, argv[arg_index]);
-        if (length == 0)
-        {
-            KPrintF("[ELECTRON-CONTEXT] process.argv does not fit at '%s'\n",
-                argv[arg_index]);
-            return 0;
-        }
-        KPrintF("[ELECTRON-CONTEXT] forwarding process.argv entry '%s'\n",
-            argv[arg_index]);
-    }
-    if (length + argv_end_length + sizeof(slot_env) + middle_length +
-        path_length + suffix_length + 1 > sizeof(command_node_script))
-        return 0;
-
-    memcpy(command_node_script + length, argv_end, argv_end_length);
-    length += argv_end_length;
-    /* Which runtime slot the app runs in (0 = the primary app), so a script
-       serving as more than one app in a process can tell its instances
-       apart. */
-    length += snprintf(command_node_script + length, sizeof(slot_env),
-        "process.env.ELECTRON_APP_SLOT='%ld';", (long)slot);
-    memcpy(command_node_script + length, middle, middle_length);
-    length += middle_length;
-    memcpy(command_node_script + length, path, path_length);
-    length += path_length;
-    memcpy(command_node_script + length, suffix, suffix_length + 1);
-    return 1;
-}
-#endif
-
 static int real_main(int argc, char **argv);
 
 /*
@@ -2116,83 +2087,428 @@ int main(int argc, char **argv)
     return rc;
 }
 
-static int real_main(int argc, char **argv)
+static void fill_cef_settings(cef_settings_t *settings)
 {
+    memset(settings, 0, sizeof(*settings));
+    settings->size = sizeof(*settings);
+    settings->no_sandbox = 1;
+#ifndef ELECTRON_SHELL_WINDOWED
+    settings->windowless_rendering_enabled = 1;
+#endif
+    set_static_cef_string(&settings->root_cache_path, root_cache_path,
+        (sizeof(root_cache_path) / sizeof(root_cache_path[0])) - 1);
+    set_static_cef_string(&settings->cache_path, cache_path,
+        (sizeof(cache_path) / sizeof(cache_path[0])) - 1);
+    set_static_cef_string(&settings->resources_dir_path, resources_path,
+        (sizeof(resources_path) / sizeof(resources_path[0])) - 1);
+    set_static_cef_string(&settings->locales_dir_path, locales_path,
+        (sizeof(locales_path) / sizeof(locales_path[0])) - 1);
+}
+
+#ifdef ELECTRON_SHELL_WINDOWED
+/*
+ * electron.library is opened by the engine host and CEF children only, never
+ * by a launcher.  The libraries it opens on first use (cef-blink, node, v8,
+ * the C runtime they link) bind the opening task's streams and per-task
+ * bases for the rest of the boot, so the first opener has to be the engine,
+ * not a launcher that exits after its app.
+ */
+struct Library *ElectronBase;
+
+static int open_electron(void)
+{
+    ElectronBase = OpenLibrary(ELECTRONNAME, ELECTRONVERSION);
+    if (ElectronBase == NULL)
+        KPrintF("[ELECTRON-CONTEXT] cannot open " ELECTRONNAME "\n");
+    return ElectronBase != NULL;
+}
+
+struct ScriptBuffer
+{
+    char *text;
+    size_t length;
+    size_t capacity;
+    int overflow;
+};
+
+static void script_append(struct ScriptBuffer *buffer, const char *text,
+    size_t length)
+{
+    if (buffer->overflow || buffer->length + length + 1 > buffer->capacity)
+    {
+        buffer->overflow = 1;
+        return;
+    }
+    memcpy(buffer->text + buffer->length, text, length);
+    buffer->length += length;
+    buffer->text[buffer->length] = '\0';
+}
+
+static void script_append_text(struct ScriptBuffer *buffer, const char *text)
+{
+    script_append(buffer, text, strlen(text));
+}
+
+/* A JavaScript string literal; AROS text is Latin-1, so bytes above 0x7f
+   are escaped as the code points they are. */
+static void script_append_quoted(struct ScriptBuffer *buffer,
+    const char *text)
+{
+    size_t i;
+
+    script_append(buffer, "'", 1);
+    for (i = 0; text[i] != '\0'; ++i)
+    {
+        unsigned char c = (unsigned char)text[i];
+        char escape[8];
+
+        if (c == '\'' || c == '\\')
+        {
+            escape[0] = '\\';
+            escape[1] = (char)c;
+            script_append(buffer, escape, 2);
+        }
+        else if (c < 0x20 || c >= 0x7f)
+        {
+            snprintf(escape, sizeof(escape), "\\x%02x", c);
+            script_append(buffer, escape, 4);
+        }
+        else
+            script_append(buffer, &text[i], 1);
+    }
+    script_append(buffer, "'", 1);
+}
+
+/*
+ * The app's Node wrapper.  Electron hands the whole command line to the main
+ * script as process.argv, with the app directory first: VS Code's dev-mode
+ * argv parser (parseMainProcessArgv: stripAppPath) removes the first
+ * non-option entry.  The launcher's local shell variables become the app's
+ * own process.env entries, and its stdout/stderr are the launcher's.
+ * ELECTRON_APP_SLOT is the app's index in its launch (0 = main script) so a
+ * script serving as several apps of one launch can tell them apart.
+ */
+static char *engine_build_script(const struct EngineRequest *request)
+{
+    static const char argv_prefix[] =
+        "process.argv=['AROS-Electron','--no-sandbox',"
+        "'--disable-gpu','--disable-gpu-compositing'";
+    static const char stdio_code[] =
+        "(()=>{const b=process._linkedBinding('aros_electron');"
+        "const {Writable}=require('stream');"
+        "const mk=(n)=>{const w=new Writable({decodeStrings:false,"
+        "write(c,e,cb){b.invoke('stdio.write',n+'\\t'+String(c));cb();}});"
+        "w.fd=n;w.isTTY=false;return w;};"
+        "const o=mk(1),e=mk(2);"
+        "Object.defineProperty(process,'stdout',{configurable:true,"
+        "enumerable:true,get:()=>o});"
+        "Object.defineProperty(process,'stderr',{configurable:true,"
+        "enumerable:true,get:()=>e});"
+        "try{console._stdout=o;console._stderr=e;}catch(_){}})();";
+    static const char middle[] =
+        "process.env.VSCODE_DEV='1';"
+        "process._rawDebug('[ELECTRON-MODULE] loading main entry "
+        MAIN_SCRIPT_OPTION "');"
+        "const __arosElectronMain=";
     /*
-     * Preserve every native child-process switch and leave room for the two
-     * AROS defaults plus the terminating NULL.  Chromium appends transport
-     * switches (including Mojo) after its ordinary process switches, so a
-     * fixed bring-up array silently converted a valid multi-process launch
-     * into an invalid child command line.
+     * A synchronous throw from the main script never reaches the module
+     * bootstrap's uncaughtException hook (it leaves LoadEnvironment directly)
+     * and node.library only reports it through NodeBridgeLog(), which is
+     * compiled out of a non-debug tree - so it came back as a bare rc=20.
+     * Report it through the bootstrap's console.error hook (the [ELECTRON-JS]
+     * line in the debug log), then rethrow so the attach fails as before.
      */
+    static const char suffix[] =
+        ";const __arosRequire=require('module').createRequire("
+        "__arosElectronMain);"
+        "globalThis.__arosElectronMainModuleRequest=__arosElectronMain;"
+        "try{__arosRequire(__arosElectronMain);}catch(e){"
+        "console.error('[ELECTRON-MODULE] main threw: '+"
+        "((e&&e.stack)||e));throw e;}";
+    struct ScriptBuffer buffer;
+    const char *cursor;
+    char text[160];
+    size_t capacity = 16384 + sizeof(node_script);
+    int arg_index;
+
+    if (request->env != NULL)
+    {
+        for (cursor = request->env; *cursor != '\0';
+            cursor += strlen(cursor) + 1)
+            capacity += 4 * strlen(cursor) + 32;
+    }
+    for (arg_index = 1; arg_index < request->argc; ++arg_index)
+        if (request->argv[arg_index] != NULL)
+            capacity += 4 * strlen(request->argv[arg_index]) + 4;
+    if (request->main_script != NULL)
+        capacity += 8 * strlen(request->main_script);
+
+    memset(&buffer, 0, sizeof(buffer));
+    buffer.capacity = capacity;
+    buffer.text = AllocVec(capacity, MEMF_ANY);
+    if (buffer.text == NULL)
+        return NULL;
+    buffer.text[0] = '\0';
+
+    if (request->main_script != NULL)
+    {
+        const char *path = request->main_script;
+        size_t app_length = strlen(path);
+        char app_path[512];
+
+        while (app_length > 0 && path[app_length - 1] != '/' &&
+            path[app_length - 1] != ':')
+            --app_length;
+        if (app_length == 0 || app_length >= sizeof(app_path))
+        {
+            FreeVec(buffer.text);
+            return NULL;
+        }
+        memcpy(app_path, path, app_length);
+        app_path[app_length] = '\0';
+        script_append_text(&buffer, argv_prefix);
+        script_append_text(&buffer, ",");
+        script_append_quoted(&buffer, app_path);
+        for (arg_index = 1; arg_index < request->argc; ++arg_index)
+        {
+            const char *argument = request->argv[arg_index];
+
+            if (argument == NULL || argument[0] == '\0' ||
+                strncmp(argument, MAIN_SCRIPT_OPTION,
+                    sizeof(MAIN_SCRIPT_OPTION) - 1) == 0 ||
+                strncmp(argument, APP_SCRIPT_OPTION,
+                    sizeof(APP_SCRIPT_OPTION) - 1) == 0 ||
+                (argument[0] == '-' && argument[1] == '-' &&
+                    strstr(argument, "-schemes=") != NULL))
+                continue;
+            script_append_text(&buffer, ",");
+            script_append_quoted(&buffer, argument);
+        }
+        script_append_text(&buffer, "];");
+    }
+    snprintf(text, sizeof(text), "process.env.ELECTRON_APP_SLOT='%ld';",
+        (long)request->app_index);
+    script_append_text(&buffer, text);
+    if (request->env != NULL)
+    {
+        for (cursor = request->env; *cursor != '\0'; )
+        {
+            const char *name = cursor;
+            const char *value = name + strlen(name) + 1;
+
+            cursor = value + strlen(value) + 1;
+            script_append_text(&buffer, "process.env[");
+            script_append_quoted(&buffer, name);
+            script_append_text(&buffer, "]=");
+            script_append_quoted(&buffer, value);
+            script_append_text(&buffer, ";");
+        }
+    }
+    if (request->output != BNULL || request->error != BNULL)
+        script_append_text(&buffer, stdio_code);
+    if (request->main_script != NULL)
+    {
+        script_append_text(&buffer, middle);
+        script_append_quoted(&buffer, request->main_script);
+        script_append_text(&buffer, suffix);
+    }
+    else
+        script_append_text(&buffer, (const char *)node_script);
+
+    if (buffer.overflow)
+    {
+        FreeVec(buffer.text);
+        return NULL;
+    }
+    return buffer.text;
+}
+
+static int engine_set_default_url(struct EngineApp *app, const char *url)
+{
+    size_t length = url != NULL ? strlen(url) :
+        (sizeof(test_url) / sizeof(test_url[0])) - 1;
+    size_t i;
+
+    app->default_url = AllocVec((length + 1) * sizeof(cef_char_t), MEMF_ANY);
+    if (app->default_url == NULL)
+        return 0;
+    for (i = 0; i < length; ++i)
+        app->default_url[i] = url != NULL ? (unsigned char)url[i] :
+            test_url[i];
+    app->default_url[length] = 0;
+    app->default_url_length = length;
+    return 1;
+}
+
+static void engine_reject(struct EngineRequest *request, LONG code)
+{
+    if (request->current_dir != BNULL)
+        UnLock(request->current_dir);
+    request->current_dir = BNULL;
+    request->result = code;
+    ReplyMsg(&request->msg);
+}
+
+/* A launcher's app joins the engine: registry entry, runtime slot, Node. */
+static void engine_start_app(struct EngineRequest *request)
+{
+    struct EngineApp *app = NULL;
+    char *script;
+    BPTR old_dir;
+    LONG rc;
+    int i;
+
+    for (i = 0; i < MAX_ENGINE_APPS; ++i)
+    {
+        if (!engine_apps[i].in_use)
+        {
+            app = &engine_apps[i];
+            break;
+        }
+    }
+    if (app == NULL)
+    {
+        KPrintF("[ELECTRON-ENGINE] registry full (%ld apps), launcher %lu "
+            "refused\n", (LONG)MAX_ENGINE_APPS, request->launcher_pid);
+        engine_reject(request, RETURN_FAIL);
+        return;
+    }
+    memset(app, 0, sizeof(*app));
+    app->slot = ElectronCreateAppRuntime();
+    if (app->slot <= 0 || !engine_set_default_url(app, request->url))
+    {
+        KPrintF("[ELECTRON-ENGINE] no runtime slot for launcher %lu\n",
+            request->launcher_pid);
+        if (app->slot > 0)
+            ElectronReleaseAppRuntime(app->slot);
+        memset(app, 0, sizeof(*app));
+        engine_reject(request, RETURN_FAIL);
+        return;
+    }
+    app->in_use = 1;
+    app->request = request;
+    app->index = request->app_index;
+    app->launcher_pid = request->launcher_pid;
+    app->current_dir = request->current_dir;
+    request->current_dir = BNULL;
+    ElectronSetAppStdio(app->slot, request->output, request->error);
+    DateStamp(&app->started);
+    app->start_tick = pump_tick;
+    app->probe_mode = request->main_script == NULL && request->url == NULL;
+    ++engine_app_count;
+    KPrintF("[ELECTRON-ENGINE] registry +app slot=%ld index=%ld launcher=%lu "
+        "script='%s' count=%ld\n", app->slot, app->index, app->launcher_pid,
+        request->main_script != NULL ? request->main_script : "(built-in)",
+        (LONG)engine_app_count);
+
+    script = engine_build_script(request);
+    if (script == NULL)
+    {
+        KPrintF("[ELECTRON-ENGINE] slot %ld: cannot build the main script "
+            "wrapper\n", app->slot);
+        engine_finish_app(app, RETURN_FAIL);
+        return;
+    }
+    KPrintF("[ELECTRON-CONTEXT] Node main wrapper '%s'\n", script);
+    old_dir = CurrentDir(app->current_dir);
+    rc = ElectronSelectAppRuntime(app->slot);
+    if (rc == 0)
+    {
+        rc = ElectronPrepareNodeEmbedder();
+        if (rc == 0)
+            rc = ElectronAttachNodeOwnedV8ContextWithModule(
+                (CONST_STRPTR)script);
+        ElectronSelectAppRuntime(0);
+    }
+    CurrentDir(old_dir);
+    FreeVec(script);
+    KPrintF("[ELECTRON-ENGINE] slot %ld attach rc=%ld\n", app->slot, rc);
+    if (rc != 0)
+        engine_finish_app(app, RETURN_FAIL);
+}
+
+static void engine_cancel_launcher(ULONG launcher_pid)
+{
+    int i;
+
+    for (i = 0; i < MAX_ENGINE_APPS; ++i)
+    {
+        struct EngineApp *app = &engine_apps[i];
+
+        if (app->in_use && app->launcher_pid == launcher_pid)
+        {
+            KPrintF("[ELECTRON-ENGINE] launcher %lu broke off, closing slot "
+                "%ld\n", launcher_pid, app->slot);
+            engine_request_app_exit(app, APP_CANCELLED_CODE);
+        }
+    }
+}
+
+static void engine_service_port(void)
+{
+    struct EngineRequest *request;
+
+    while ((request = (struct EngineRequest *)GetMsg(engine_port)) != NULL)
+    {
+        if (request->magic != ENGINE_REQUEST_MAGIC)
+        {
+            ReplyMsg(&request->msg);
+            continue;
+        }
+        if (request->kind == ENGINE_CANCEL)
+        {
+            engine_cancel_launcher(request->launcher_pid);
+            request->result = 0;
+            ReplyMsg(&request->msg);
+            continue;
+        }
+        engine_start_app(request);
+    }
+}
+
+/* The engine could not start: every launcher already queued gets a
+   failure, and the port goes so the next launcher starts a new host. */
+static void engine_close_port(void)
+{
+    struct EngineRequest *request;
+
+    Forbid();
+    RemPort(engine_port);
+    Permit();
+    while ((request = (struct EngineRequest *)GetMsg(engine_port)) != NULL)
+    {
+        if (request->magic == ENGINE_REQUEST_MAGIC &&
+            request->kind == ENGINE_RUN_APP)
+            engine_reject(request, RETURN_FAIL);
+        else
+            ReplyMsg(&request->msg);
+    }
+    DeleteMsgPort(engine_port);
+    engine_port = NULL;
+}
+
+static int engine_main(int argc, char **argv)
+{
     char *cef_argv[argc + 3];
     cef_main_args_t main_args;
     cef_settings_t settings;
     cef_window_info_t window_info;
     cef_browser_settings_t browser_settings;
-    cef_string_t url;
-    cef_char_t *selected_url = test_url;
-    size_t selected_url_length =
-        (sizeof(test_url) / sizeof(test_url[0])) - 1;
-    int external_url = 0;
-    int cef_child_process = 0;
-    int cef_argc;
+    BPTR sys_dir;
+    BPTR start_dir = BNULL;
+    int cef_argc = 0;
     int arg_index;
     LONG rc;
-    ULONG ticks;
-    int extra_index;
-    ULONG close_ticks;
-    int result = 20;
-    struct Process *process = (struct Process *)FindTask(NULL);
-    APTR saved_window_ptr = NULL;
-    int requesters_suppressed = 0;
-    const unsigned char *selected_node_script = node_script;
 
-#ifdef ELECTRON_SHELL_WINDOWED
-    for (arg_index = 1; arg_index < argc; ++arg_index)
+    cef_argv[cef_argc++] = argv[0];
+    cef_argv[cef_argc++] = (char *)"--disable-gpu";
+    cef_argv[cef_argc++] = (char *)"--disable-gpu-compositing";
+    for (arg_index = 1; arg_index < argc && cef_argc + 1 < argc + 3;
+        ++arg_index)
     {
-        const size_t main_script_option_length =
-            sizeof(MAIN_SCRIPT_OPTION) - 1;
-        size_t i;
-
-        if (argv[arg_index] == NULL || argv[arg_index][0] == '\0')
+        if (argv[arg_index] == NULL ||
+            strcmp(argv[arg_index], ENGINE_HOST_OPTION) == 0)
             continue;
-        if (strncmp(argv[arg_index], "--type=", 7) == 0)
-            cef_child_process = 1;
-        if (strncmp(argv[arg_index], MAIN_SCRIPT_OPTION,
-            main_script_option_length) == 0)
-        {
-            const char *main_script_path =
-                argv[arg_index] + main_script_option_length;
-            if (!make_node_main_script(main_script_path, 0, argc, argv))
-            {
-                KPrintF("[ELECTRON-CONTEXT] invalid main script path '%s'\n",
-                    main_script_path);
-                return 20;
-            }
-            selected_node_script = command_node_script;
-            app_mode = 1;
-            KPrintF("[ELECTRON-CONTEXT] loading Node main script '%s'\n",
-                main_script_path);
-            continue;
-        }
-        if (strncmp(argv[arg_index], APP_SCRIPT_OPTION,
-            sizeof(APP_SCRIPT_OPTION) - 1) == 0)
-        {
-            if (extra_app_count < MAX_EXTRA_APPS)
-            {
-                extra_apps[extra_app_count].path =
-                    argv[arg_index] + sizeof(APP_SCRIPT_OPTION) - 1;
-                KPrintF("[ELECTRON-CONTEXT] extra app %ld script '%s'\n",
-                    (LONG)extra_app_count,
-                    extra_apps[extra_app_count].path);
-                ++extra_app_count;
-            }
-            else
-                KPrintF("[ELECTRON-CONTEXT] too many " APP_SCRIPT_OPTION
-                    " options, ignoring '%s'\n", argv[arg_index]);
-            continue;
-        }
         if (parse_scheme_switch(argv[arg_index]))
         {
             KPrintF("[ELECTRON-CONTEXT] custom scheme switch '%s'\n",
@@ -2200,24 +2516,451 @@ static int real_main(int argc, char **argv)
             continue;
         }
         if (argv[arg_index][0] == '-' && argv[arg_index][1] == '-')
-            continue;
-        if (external_url)
-            continue;
-
-        for (i = 0; argv[arg_index][i] != '\0' &&
-            i + 1 < (sizeof(command_url) / sizeof(command_url[0])); ++i)
-            command_url[i] = (unsigned char)argv[arg_index][i];
-        command_url[i] = 0;
-        selected_url = command_url;
-        selected_url_length = i;
-        external_url = 1;
-        external_url_mode = 1;
-        KPrintF("[ELECTRON-CONTEXT] loading command URL '%s'\n",
-            argv[arg_index]);
+        {
+            cef_argv[cef_argc++] = argv[arg_index];
+            KPrintF("[ELECTRON-CONTEXT] forwarding CEF switch '%s'\n",
+                argv[arg_index]);
+        }
     }
+    cef_argv[cef_argc] = NULL;
+    main_args.argc = cef_argc;
+    main_args.argv = cef_argv;
+
+    engine_port = CreateMsgPort();
+    if (engine_port == NULL)
+        return RETURN_FAIL;
+    engine_port->mp_Node.ln_Name = (char *)ENGINE_PORT_NAME;
+    engine_port->mp_Node.ln_Pri = 0;
+    Forbid();
+    if (FindPort(ENGINE_PORT_NAME) != NULL)
+    {
+        Permit();
+        DeleteMsgPort(engine_port);
+        KPrintF("[ELECTRON-ENGINE] another engine host owns the port\n");
+        return RETURN_OK;
+    }
+    AddPort(engine_port);
+    Permit();
+    KPrintF("[ELECTRON-ENGINE] engine host %lu started, port '%s'\n",
+        GetETaskID(FindTask(NULL)), ENGINE_PORT_NAME);
+
+    if (!open_electron())
+    {
+        engine_close_port();
+        return RETURN_FAIL;
+    }
+
+    /* The host outlives the launcher that started it: it must not hold
+       that launcher's directory. */
+    sys_dir = Lock("SYS:", SHARED_LOCK);
+    if (sys_dir != BNULL)
+        start_dir = CurrentDir(sys_dir);
+
+    initialize_handlers();
+    ui_pump_port = CreateMsgPort();
+    if (ui_pump_port == NULL ||
+        !ensure_profile_directory("T:ElectronContext") ||
+        !ensure_profile_directory("T:ElectronContext/Default"))
+        goto failed;
+    memset(&ui_pump_message, 0, sizeof(ui_pump_message));
+    ui_pump_message.mn_Node.ln_Type = NT_MESSAGE;
+    ui_pump_message.mn_Length = sizeof(ui_pump_message);
+    fill_cef_settings(&settings);
+
+    rc = ElectronPrepareNodeEmbedder();
+    KPrintF("[ELECTRON-CONTEXT] prepare Node rc=%ld\n", rc);
+    if (rc != 0)
+        goto failed;
+    rc = ElectronExecuteCEFProcess(&main_args, &app, NULL);
+    KPrintF("[ELECTRON-CONTEXT] CEF execute rc=%ld\n", rc);
+    if (rc >= 0)
+        goto failed;
+    rc = ElectronInitializeCEF(&main_args, &settings, &app, NULL);
+    KPrintF("[ELECTRON-CONTEXT] CEF initialize rc=%ld\n", rc);
+    if (rc == ELECTRON_CEF_ENGINE_RUNNING)
+    {
+        KPrintF("[ELECTRON-ENGINE] CEF is already running in this boot "
+            "under another host; this host cannot serve apps\n");
+        goto failed;
+    }
+    if (rc == 0)
+        goto failed;
+
+    memset(&window_info, 0, sizeof(window_info));
+    window_info.bounds.width = VIEW_WIDTH;
+    window_info.bounds.height = VIEW_HEIGHT;
+    set_static_cef_string(&window_info.window_name, window_title,
+        (sizeof(window_title) / sizeof(window_title[0])) - 1);
+    memset(&browser_settings, 0, sizeof(browser_settings));
+    browser_settings.size = sizeof(browser_settings);
+
+    /* Chromium installs its browser-task V8 platform before Node creates
+       the first owned main-process isolate in the same resident engine. */
+    ElectronDoCEFMessageLoopWork();
+    KPrintF("[ELECTRON-ENGINE] engine running\n");
+
+    for (pump_tick = 0; ; ++pump_tick)
+    {
+        ElectronDoCEFMessageLoopWork();
+        service_renderer_pump_port();
+        engine_service_port();
+        engine_pump_apps();
+        service_native_window_requests(&window_info, &browser_settings);
+        Delay(1);
+    }
+
+failed:
+    KPrintF("[ELECTRON-ENGINE] engine host failed to start\n");
+    engine_close_port();
+    if (ui_pump_port != NULL)
+        DeleteMsgPort(ui_pump_port);
+    if (sys_dir != BNULL)
+    {
+        CurrentDir(start_dir);
+        UnLock(sys_dir);
+    }
+    return RETURN_FAIL;
+}
+
+/* Renderer and other CEF child processes of a multi-process engine. */
+static int child_main(int argc, char **argv)
+{
+    char *cef_argv[argc + 1];
+    cef_main_args_t main_args;
+    int arg_index;
+    LONG rc;
+
+    for (arg_index = 0; arg_index < argc; ++arg_index)
+        cef_argv[arg_index] = argv[arg_index];
+    cef_argv[argc] = NULL;
+    main_args.argc = argc;
+    main_args.argv = cef_argv;
+    if (!open_electron())
+        return RETURN_FAIL;
+    initialize_handlers();
+    rc = ElectronExecuteCEFProcess(&main_args, &app, NULL);
+    KPrintF("[ELECTRON-CONTEXT] child CEF execute rc=%ld\n", rc);
+    return rc >= 0 ? (int)rc : RETURN_FAIL;
+}
+
+/* The launcher's local shell variables, "name\0value\0...\0". */
+static char *launcher_local_env(void)
+{
+    struct Process *process = (struct Process *)FindTask(NULL);
+    struct LocalVar *var;
+    size_t size = 1;
+    char *block;
+    char *out;
+
+    ForeachNode((struct List *)&process->pr_LocalVars, var)
+    {
+        if (var->lv_Node.ln_Type == LV_VAR &&
+            !(var->lv_Flags & GVF_BINARY_VAR) && var->lv_Value != NULL &&
+            memchr(var->lv_Value, '\0', var->lv_Len) == NULL)
+            size += strlen(var->lv_Node.ln_Name) + 1 + var->lv_Len + 1;
+    }
+    block = AllocVec(size, MEMF_ANY);
+    if (block == NULL)
+        return NULL;
+    out = block;
+    ForeachNode((struct List *)&process->pr_LocalVars, var)
+    {
+        if (var->lv_Node.ln_Type == LV_VAR &&
+            !(var->lv_Flags & GVF_BINARY_VAR) && var->lv_Value != NULL &&
+            memchr(var->lv_Value, '\0', var->lv_Len) == NULL)
+        {
+            size_t name_length = strlen(var->lv_Node.ln_Name);
+
+            memcpy(out, var->lv_Node.ln_Name, name_length + 1);
+            out += name_length + 1;
+            memcpy(out, var->lv_Value, var->lv_Len);
+            out += var->lv_Len;
+            *out++ = '\0';
+        }
+    }
+    *out = '\0';
+    return block;
+}
+
+/* Starts an engine host from this program's own file, detached from the
+   launcher: NIL: for its stdio, the launcher's CEF switches on its command
+   line. */
+static int launcher_spawn_engine(int argc, char **argv)
+{
+    char program[512];
+    char name[256];
+    char *command;
+    size_t size;
+    BPTR input;
+    BPTR output;
+    BPTR error;
+    LONG rc;
+    int arg_index;
+
+    if (!NameFromLock(GetProgramDir(), program, sizeof(program)) ||
+        !GetProgramName(name, sizeof(name)) ||
+        !AddPart(program, FilePart(name), sizeof(program)))
+    {
+        KPrintF("[ELECTRON-LAUNCHER] cannot name this program to start the "
+            "engine\n");
+        return 0;
+    }
+    size = strlen(program) + sizeof(ENGINE_HOST_OPTION) + 8;
+    for (arg_index = 1; arg_index < argc; ++arg_index)
+        size += strlen(argv[arg_index]) + 4;
+    command = AllocVec(size, MEMF_ANY);
+    if (command == NULL)
+        return 0;
+    snprintf(command, size, "\"%s\" " ENGINE_HOST_OPTION, program);
+    for (arg_index = 1; arg_index < argc; ++arg_index)
+    {
+        const char *argument = argv[arg_index];
+
+        if (argument[0] != '-' || argument[1] != '-' ||
+            strncmp(argument, MAIN_SCRIPT_OPTION,
+                sizeof(MAIN_SCRIPT_OPTION) - 1) == 0 ||
+            strncmp(argument, APP_SCRIPT_OPTION,
+                sizeof(APP_SCRIPT_OPTION) - 1) == 0 ||
+            strchr(argument, '"') != NULL)
+            continue;
+        strcat(command, " \"");
+        strcat(command, argument);
+        strcat(command, "\"");
+    }
+    /* All three streams explicitly: left out, the error stream is a
+       duplicate of this launcher's, which dies with it. */
+    input = Open("NIL:", MODE_OLDFILE);
+    output = Open("NIL:", MODE_NEWFILE);
+    error = Open("NIL:", MODE_NEWFILE);
+    rc = -1;
+    if (input != BNULL && output != BNULL && error != BNULL)
+        rc = SystemTags((CONST_STRPTR)command,
+            SYS_Input, (IPTR)input,
+            SYS_Output, (IPTR)output,
+            SYS_Error, (IPTR)error,
+            SYS_Asynch, TRUE,
+            TAG_END);
+    KPrintF("[ELECTRON-LAUNCHER] started engine host rc=%ld: %s\n", rc,
+        command);
+    FreeVec(command);
+    if (rc == -1)
+    {
+        if (input != BNULL)
+            Close(input);
+        if (output != BNULL)
+            Close(output);
+        if (error != BNULL)
+            Close(error);
+        return 0;
+    }
+    return 1;
+}
+
+static int launcher_post(struct EngineRequest *requests, int count)
+{
+    struct MsgPort *port;
+    int i;
+
+    Forbid();
+    port = FindPort(ENGINE_PORT_NAME);
+    if (port != NULL)
+        for (i = 0; i < count; ++i)
+            PutMsg(port, &requests[i].msg);
+    Permit();
+    return port != NULL;
+}
+
+static int launcher_main(int argc, char **argv)
+{
+    struct EngineRequest requests[1 + MAX_EXTRA_APPS];
+    struct EngineRequest cancel;
+    struct MsgPort *reply_port;
+    const char *main_script = NULL;
+    const char *url = NULL;
+    const char *app_scripts[MAX_EXTRA_APPS];
+    int app_script_count = 0;
+    char *env;
+    ULONG pid = GetETaskID(FindTask(NULL));
+    ULONG waited = 0;
+    int count;
+    int replies = 0;
+    int spawned = 0;
+    int posted = 0;
+    int cancel_state = 0;
+    int i;
+    LONG result;
+
+    for (i = 1; i < argc; ++i)
+    {
+        if (argv[i] == NULL || argv[i][0] == '\0')
+            continue;
+        if (strncmp(argv[i], MAIN_SCRIPT_OPTION,
+            sizeof(MAIN_SCRIPT_OPTION) - 1) == 0)
+            main_script = argv[i] + sizeof(MAIN_SCRIPT_OPTION) - 1;
+        else if (strncmp(argv[i], APP_SCRIPT_OPTION,
+            sizeof(APP_SCRIPT_OPTION) - 1) == 0)
+        {
+            if (app_script_count < MAX_EXTRA_APPS)
+                app_scripts[app_script_count++] =
+                    argv[i] + sizeof(APP_SCRIPT_OPTION) - 1;
+            else
+                KPrintF("[ELECTRON-LAUNCHER] too many " APP_SCRIPT_OPTION
+                    " options, ignoring '%s'\n", argv[i]);
+        }
+        else if (!(argv[i][0] == '-' && argv[i][1] == '-') && url == NULL &&
+            main_script == NULL)
+            url = argv[i];
+    }
+    if (main_script != NULL)
+        url = NULL;
+    if (main_script != NULL && (main_script[0] == '\0' ||
+        strchr(main_script, ':') == NULL && strchr(main_script, '/') == NULL))
+    {
+        KPrintF("[ELECTRON-LAUNCHER] invalid main script path '%s'\n",
+            main_script);
+        return RETURN_FAIL;
+    }
+    if (main_script == NULL)
+        app_script_count = 0;
+
+    reply_port = CreateMsgPort();
+    env = launcher_local_env();
+    if (reply_port == NULL || env == NULL)
+    {
+        if (reply_port != NULL)
+            DeleteMsgPort(reply_port);
+        FreeVec(env);
+        return RETURN_FAIL;
+    }
+    count = 1 + app_script_count;
+    memset(requests, 0, sizeof(requests));
+    for (i = 0; i < count; ++i)
+    {
+        struct EngineRequest *request = &requests[i];
+
+        request->msg.mn_Node.ln_Type = NT_MESSAGE;
+        request->msg.mn_Length = sizeof(*request);
+        request->msg.mn_ReplyPort = reply_port;
+        request->magic = ENGINE_REQUEST_MAGIC;
+        request->kind = ENGINE_RUN_APP;
+        request->launcher_pid = pid;
+        request->app_index = i;
+        request->main_script = i == 0 ? main_script : app_scripts[i - 1];
+        request->url = i == 0 ? url : NULL;
+        request->argc = argc;
+        request->argv = argv;
+        request->env = env;
+        request->current_dir = DupLock(((struct Process *)FindTask(NULL))->
+            pr_CurrentDir);
+        request->output = Output();
+        request->error = ((struct Process *)FindTask(NULL))->pr_CES != BNULL ?
+            ((struct Process *)FindTask(NULL))->pr_CES : Output();
+        request->result = RETURN_FAIL;
+    }
+
+    for (;;)
+    {
+        posted = launcher_post(requests, count);
+        if (posted)
+            break;
+        if (!spawned)
+        {
+            if (!launcher_spawn_engine(argc, argv))
+                break;
+            spawned = 1;
+        }
+        if (waited >= ENGINE_START_TIMEOUT_TICKS ||
+            CheckSignal(SIGBREAKF_CTRL_C))
+            break;
+        Delay(5);
+        waited += 5;
+    }
+    if (!posted)
+    {
+        KPrintF("[ELECTRON-LAUNCHER] no engine to run the app\n");
+        for (i = 0; i < count; ++i)
+            if (requests[i].current_dir != BNULL)
+                UnLock(requests[i].current_dir);
+        DeleteMsgPort(reply_port);
+        FreeVec(env);
+        return RETURN_FAIL;
+    }
+
+    /* CTRL-C asks the engine to close this launcher's apps; their replies
+       still come back before the launcher may go. */
+    memset(&cancel, 0, sizeof(cancel));
+    while (replies < count || cancel_state == 1)
+    {
+        struct Message *message;
+        ULONG signals = Wait((1UL << reply_port->mp_SigBit) |
+            SIGBREAKF_CTRL_C);
+
+        while ((message = GetMsg(reply_port)) != NULL)
+        {
+            if (message == &cancel.msg)
+                cancel_state = 2;
+            else
+            {
+                ++replies;
+                KPrintF("[ELECTRON-LAUNCHER] %lu: app %ld exited code=%ld\n",
+                    pid, ((struct EngineRequest *)message)->app_index,
+                    ((struct EngineRequest *)message)->result);
+            }
+        }
+        if ((signals & SIGBREAKF_CTRL_C) && cancel_state == 0 &&
+            replies < count)
+        {
+            cancel.msg.mn_Node.ln_Type = NT_MESSAGE;
+            cancel.msg.mn_Length = sizeof(cancel);
+            cancel.msg.mn_ReplyPort = reply_port;
+            cancel.magic = ENGINE_REQUEST_MAGIC;
+            cancel.kind = ENGINE_CANCEL;
+            cancel.launcher_pid = pid;
+            if (!launcher_post(&cancel, 1))
+            {
+                KPrintF("[ELECTRON-LAUNCHER] engine port gone while %ld "
+                    "app(s) were running\n", (LONG)(count - replies));
+                return RETURN_FAIL;
+            }
+            cancel_state = 1;
+        }
+    }
+    result = requests[0].result;
+    DeleteMsgPort(reply_port);
+    FreeVec(env);
+    return (int)result;
+}
+
+static int real_main(int argc, char **argv)
+{
+    int arg_index;
+
+    for (arg_index = 1; arg_index < argc; ++arg_index)
+    {
+        if (argv[arg_index] == NULL)
+            continue;
+        if (strncmp(argv[arg_index], "--type=", 7) == 0)
+            return child_main(argc, argv);
+        if (strcmp(argv[arg_index], ENGINE_HOST_OPTION) == 0)
+            return engine_main(argc, argv);
+    }
+    return launcher_main(argc, argv);
+}
 #else
+static int real_main(int argc, char **argv)
+{
+    char *cef_argv[4];
+    cef_main_args_t main_args;
+    cef_settings_t settings;
+    cef_window_info_t window_info;
+    cef_browser_settings_t browser_settings;
+    cef_string_t url;
+    LONG rc;
+    ULONG ticks;
+    ULONG close_ticks;
+    int result = 20;
+
     (void)argc;
-#endif
     initialize_handlers();
     ui_pump_port = CreateMsgPort();
     if (ui_pump_port == NULL)
@@ -2236,82 +2979,14 @@ static int real_main(int argc, char **argv)
         return 20;
     }
 
-    if (external_url && process != NULL)
-    {
-        saved_window_ptr = process->pr_WindowPtr;
-        process->pr_WindowPtr = (APTR)(SIPTR)-1;
-        requesters_suppressed = 1;
-        KPrintF("[ELECTRON-CONTEXT] DOS requesters suppressed window=%p\n",
-            saved_window_ptr);
-    }
-
     cef_argv[0] = argv[0];
-    /*
-     * Native AROS child launch and Mojo transport are now available.  Keep
-     * --single-process as an explicitly forwarded compatibility option, not
-     * the default Electron process model.
-     */
     cef_argv[1] = (char *)"--disable-gpu";
     cef_argv[2] = (char *)"--disable-gpu-compositing";
-    cef_argc = 3;
-#ifdef ELECTRON_SHELL_WINDOWED
-    for (arg_index = 1; arg_index < argc &&
-        cef_argc + 1 < (int)(sizeof(cef_argv) / sizeof(cef_argv[0]));
-        ++arg_index)
-    {
-        if (argv[arg_index] != NULL && argv[arg_index][0] == '-' &&
-            argv[arg_index][1] == '-' &&
-            strncmp(argv[arg_index], MAIN_SCRIPT_OPTION,
-                sizeof(MAIN_SCRIPT_OPTION) - 1) != 0 &&
-            strstr(argv[arg_index], "-schemes=") == NULL)
-        {
-            cef_argv[cef_argc++] = argv[arg_index];
-            KPrintF("[ELECTRON-CONTEXT] forwarding CEF switch '%s'\n",
-                argv[arg_index]);
-        }
-    }
-#else
-    (void)arg_index;
-#endif
-    cef_argv[cef_argc] = NULL;
-    main_args.argc = cef_argc;
+    cef_argv[3] = NULL;
+    main_args.argc = 3;
     main_args.argv = cef_argv;
+    fill_cef_settings(&settings);
 
-    memset(&settings, 0, sizeof(settings));
-    settings.size = sizeof(settings);
-    settings.no_sandbox = 1;
-#ifndef ELECTRON_SHELL_WINDOWED
-    settings.windowless_rendering_enabled = 1;
-#endif
-    set_static_cef_string(&settings.root_cache_path, root_cache_path,
-        (sizeof(root_cache_path) / sizeof(root_cache_path[0])) - 1);
-    set_static_cef_string(&settings.cache_path, cache_path,
-        (sizeof(cache_path) / sizeof(cache_path[0])) - 1);
-    set_static_cef_string(&settings.resources_dir_path, resources_path,
-        (sizeof(resources_path) / sizeof(resources_path[0])) - 1);
-    set_static_cef_string(&settings.locales_dir_path, locales_path,
-        (sizeof(locales_path) / sizeof(locales_path[0])) - 1);
-
-    if (cef_child_process)
-    {
-        rc = ElectronExecuteCEFProcess(&main_args, &app, NULL);
-        KPrintF("[ELECTRON-CONTEXT] child CEF execute rc=%ld\n", rc);
-        if (rc >= 0)
-        {
-            DeleteMsgPort(ui_pump_port);
-            return (int)rc;
-        }
-    }
-
-    /*
-     * Renderer children share electron.library with the browser process, but
-     * they are Chromium roles rather than Node embedders.  Dispatch them
-     * before touching the process-global Node engine; otherwise they observe
-     * the browser's prepared Node state, return rc=20, and exit before Blink
-     * can execute the document's first script.  Other child roles retain the
-     * established bring-up behavior until their service lifecycle is proven
-     * independently.
-     */
     rc = ElectronPrepareNodeEmbedder();
     KPrintF("[ELECTRON-CONTEXT] prepare Node rc=%ld\n", rc);
     if (rc != 0)
@@ -2320,132 +2995,39 @@ static int real_main(int argc, char **argv)
         return (int)rc;
     }
 
-    if (!cef_child_process)
+    rc = ElectronExecuteCEFProcess(&main_args, &app, NULL);
+    KPrintF("[ELECTRON-CONTEXT] CEF execute rc=%ld\n", rc);
+    if (rc >= 0)
     {
-        rc = ElectronExecuteCEFProcess(&main_args, &app, NULL);
-        KPrintF("[ELECTRON-CONTEXT] CEF execute rc=%ld\n", rc);
-        if (rc >= 0)
-        {
-            if (requesters_suppressed)
-            {
-                process->pr_WindowPtr = saved_window_ptr;
-                KPrintF("[ELECTRON-CONTEXT] DOS requester window restored=%p\n",
-                    saved_window_ptr);
-            }
-            DeleteMsgPort(ui_pump_port);
-            return (int)rc;
-        }
+        DeleteMsgPort(ui_pump_port);
+        return (int)rc;
     }
 
     rc = ElectronInitializeCEF(&main_args, &settings, &app, NULL);
     KPrintF("[ELECTRON-CONTEXT] CEF initialize rc=%ld\n", rc);
-    if (rc == 0)
+    if (rc == ELECTRON_CEF_ENGINE_RUNNING)
+        KPrintF("[ELECTRON-CONTEXT] CEF already runs in this boot; the "
+            "probe needs a fresh engine\n");
+    if (rc == 0 || rc == ELECTRON_CEF_ENGINE_RUNNING)
         goto detach_node;
 
     memset(&window_info, 0, sizeof(window_info));
     window_info.bounds.width = VIEW_WIDTH;
     window_info.bounds.height = VIEW_HEIGHT;
-#ifdef ELECTRON_SHELL_WINDOWED
-    set_static_cef_string(&window_info.window_name, window_title,
-        (sizeof(window_title) / sizeof(window_title[0])) - 1);
-#else
     window_info.windowless_rendering_enabled = 1;
-#endif
     memset(&browser_settings, 0, sizeof(browser_settings));
     browser_settings.size = sizeof(browser_settings);
     memset(&url, 0, sizeof(url));
-    set_static_cef_string(&url, selected_url, selected_url_length);
+    set_static_cef_string(&url, test_url,
+        (sizeof(test_url) / sizeof(test_url[0])) - 1);
 
-#ifdef ELECTRON_SHELL_WINDOWED
-    /*
-     * Let Chromium install its browser-task V8 platform before Node creates
-     * the owned main-process isolate in the same resident engine.
-     */
-    KPrintF("[ELECTRON-CONTEXT] priming CEF UI loop before Node attach\n");
-    ElectronDoCEFMessageLoopWork();
-    KPrintF("[ELECTRON-CONTEXT] primed CEF UI loop before Node attach\n");
-    KPrintF("[ELECTRON-CONTEXT] Node main wrapper '%s'\n",
-        selected_node_script);
-    rc = ElectronAttachNodeOwnedV8ContextWithModule(selected_node_script);
-    KPrintF("[ELECTRON-CONTEXT] attach owned main V8 context rc=%ld\n", rc);
-    if (rc != 0)
-        goto shutdown_cef;
-    node_attached = 1;
-    /* Preserve the UI task captured before CEF/Node initialize their workers. */
-    node_context_task = (struct Task *)process;
-    KPrintF("[ELECTRON-CONTEXT] entering initial native request service\n");
-    service_native_window_requests(&window_info, &browser_settings,
-        selected_url, selected_url_length);
-    KPrintF("[ELECTRON-CONTEXT] completed initial native request service\n");
-#else
     rc = ElectronCreateCEFBrowser(&window_info, &client, &url,
         &browser_settings, NULL, NULL);
     KPrintF("[ELECTRON-CONTEXT] create browser rc=%ld\n", rc);
     if (rc == 0)
         goto shutdown_cef;
-#endif
 
-    /*
-     * Extra apps join the engine the primary app just started: a runtime slot
-     * each, their own Node environment, their own window. Selecting a slot
-     * also tells the seam which app its native events belong to, so a
-     * did-finish-load meant for one app's window is not swallowed by another
-     * app's pump. Slot 0 puts the primary app back.
-     *
-     * An app needs a main script to be an app, and the main-script machinery
-     * belongs to the windowed shell, so this is windowed-only - the headless
-     * regression variant builds without it rather than against symbols that
-     * are not there.
-     */
-#ifdef ELECTRON_SHELL_WINDOWED
-    for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
-    {
-        struct ExtraApp *extra = &extra_apps[extra_index];
-
-        extra->slot = ElectronCreateAppRuntime();
-        if (extra->slot <= 0)
-        {
-            KPrintF("[ELECTRON-CONTEXT] extra app %ld: no runtime slot\n",
-                (LONG)extra_index);
-            continue;
-        }
-        if (ElectronSelectAppRuntime(extra->slot) != 0)
-        {
-            KPrintF("[ELECTRON-CONTEXT] extra app %ld: slot %ld select failed\n",
-                (LONG)extra_index, extra->slot);
-            continue;
-        }
-        if (!make_node_main_script(extra->path, extra->slot, argc, argv))
-        {
-            KPrintF("[ELECTRON-CONTEXT] extra app %ld: bad script '%s'\n",
-                (LONG)extra_index, extra->path);
-            ElectronSelectAppRuntime(0);
-            continue;
-        }
-        rc = ElectronPrepareNodeEmbedder();
-        if (rc == 0)
-            rc = ElectronAttachNodeOwnedV8ContextWithModule(
-                command_node_script);
-        KPrintF("[ELECTRON-CONTEXT] extra app %ld slot %ld attach rc=%ld\n",
-            (LONG)extra_index, extra->slot, rc);
-        /* This bridge reports success as rc == 0, the way the primary app's
-           attach above does. */
-        extra->attached = (rc == 0);
-        ElectronSelectAppRuntime(0);
-    }
-#else
-    if (extra_app_count > 0)
-        KPrintF("[ELECTRON-CONTEXT] --app-script needs the windowed shell; "
-            "%ld extra app(s) ignored\n", (LONG)extra_app_count);
-#endif
-
-    for (ticks = 0;
-        !exit_requested &&
-            (app_mode ?
-                !(browser_closed &&
-                    ticks > browser_closed_tick + APP_CLOSE_GRACE_TICKS) :
-                (ticks < CREATE_TIMEOUT_TICKS && !browser_closed));
-        ++ticks)
+    for (ticks = 0; ticks < CREATE_TIMEOUT_TICKS && !browser_closed; ++ticks)
     {
         pump_tick = ticks;
         if (ticks == 0)
@@ -2454,47 +3036,17 @@ static int real_main(int argc, char **argv)
         if (ticks == 0)
             KPrintF("[ELECTRON-CONTEXT] completed first CEF message-loop pump\n");
         service_renderer_pump_port();
-        for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
-        {
-            struct ExtraApp *extra = &extra_apps[extra_index];
-
-            if (!extra->attached || extra->finished)
-                continue;
-            if (ElectronSelectAppRuntime(extra->slot) == 0)
-            {
-                ElectronPumpNodeEmbedder();
-                ElectronSelectAppRuntime(0);
-            }
-        }
-#ifdef ELECTRON_SHELL_WINDOWED
-        service_native_window_requests(&window_info, &browser_settings,
-            selected_url, selected_url_length);
-        pump_node_on_main_task();
-#endif
         if (!node_marker_seen && marker_exists())
             node_marker_seen = 1;
-#ifdef ELECTRON_SHELL_WINDOWED
-        if (!external_url && !app_mode &&
-            node_attached && node_marker_seen && !node_task_mismatch &&
-            first_paint && ticks > first_paint_tick + CLOSE_AFTER_PAINT_TICKS)
-            request_browser_close();
-#else
-        if (!external_url &&
-            node_attached && node_detached && node_marker_seen &&
+        if (node_attached && node_detached && node_marker_seen &&
             !node_task_mismatch && first_paint &&
             ticks > first_paint_tick + CLOSE_AFTER_PAINT_TICKS)
             request_browser_close();
-#endif
         Delay(1);
     }
 
-#ifdef ELECTRON_SHELL_WINDOWED
-    if (!browser_closed)
-        shell_request_all_windows_close();
-#else
     if (!browser_closed)
         request_browser_close();
-#endif
     for (close_ticks = 0;
         close_ticks < CLOSE_TIMEOUT_TICKS &&
             (!browser_closed || !node_detached);
@@ -2502,41 +3054,10 @@ static int real_main(int argc, char **argv)
     {
         ElectronDoCEFMessageLoopWork();
         service_renderer_pump_port();
-#ifdef ELECTRON_SHELL_WINDOWED
-        pump_node_on_main_task();
-#endif
         Delay(1);
     }
 
-#ifdef ELECTRON_SHELL_WINDOWED
-    if (node_attached && !node_detached)
-    {
-        ElectronDetachNodeEmbedder();
-        node_detached = 1;
-    }
-    /* Extra apps still running when the process ends (primary app.exit
-       timed out, or a shutdown request) go down the same way as one that
-       exited on its own. */
-    for (extra_index = 0; extra_index < extra_app_count; ++extra_index)
-    {
-        if (extra_apps[extra_index].attached && !extra_apps[extra_index].finished)
-            shell_finish_extra_app(&extra_apps[extra_index]);
-    }
-#endif
-    if (app_mode)
-    {
-        /* The application decides its own exit status; a script that just
-           let its last window close (no app.exit) exited normally. */
-        result = exit_requested ? (int)requested_exit_code : 0;
-        if (browser_closed && !exit_requested)
-            KPrintF("[ELECTRON-CONTEXT] app quit without app.exit "
-                "(last window closed %lu ticks ago)\n",
-                (unsigned long)(pump_tick - browser_closed_tick));
-        KPrintF("[ELECTRON-CONTEXT] app exited code=%ld pumps=%lu "
-            "painted=%ld closed=%ld\n", (LONG)result, node_pump_ticks,
-            (LONG)first_paint, (LONG)browser_closed);
-    }
-    else if (node_attached && node_detached && node_marker_seen &&
+    if (node_attached && node_detached && node_marker_seen &&
         !node_task_mismatch && node_pump_ticks >= NODE_PUMP_TICKS &&
         first_paint && browser_closed)
     {
@@ -2561,12 +3082,7 @@ detach_node:
     if (!node_detached)
         ElectronDetachNodeEmbedder();
     release_node_context();
-    if (requesters_suppressed)
-    {
-        process->pr_WindowPtr = saved_window_ptr;
-        KPrintF("[ELECTRON-CONTEXT] DOS requester window restored=%p\n",
-            saved_window_ptr);
-    }
     DeleteMsgPort(ui_pump_port);
     return result;
 }
+#endif
