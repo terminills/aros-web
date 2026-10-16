@@ -84,6 +84,7 @@ AROSFILES := \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-getaddrinfo \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-net \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-net-test \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-signal \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-dl \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-symbols \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-stubs \

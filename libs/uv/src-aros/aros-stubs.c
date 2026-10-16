@@ -62,13 +62,6 @@
 /* NOTE: uv_async_* are now the REAL AROS exec-signal implementation in
    src-aros/aros-async.c -- no longer stubbed here. */
 
-/* --- signal --- */
-void uv__signal_close(uv_signal_t* handle) { (void)handle; }
-void uv__signal_cleanup(void) { }
-void uv__signal_global_once_init(void) { }
-void uv__signal_loop_cleanup(uv_loop_t* loop) { (void)loop; }
-int  uv__signal_loop_fork(uv_loop_t* loop) { (void)loop; return 0; }
-
 /* --- process --- */
 void uv__process_close(uv_process_t* handle) {
   uv__queue_remove(&handle->queue);
@@ -442,18 +435,6 @@ int uv_getnameinfo(uv_loop_t* loop, uv_getnameinfo_t* req,
   if (callback != NULL)
     callback(req, UV_EAI_FAIL, NULL, NULL);
   return UV_EAI_FAIL;
-}
-
-int uv_signal_init(uv_loop_t* loop, uv_signal_t* handle) {
-  (void)loop; (void)handle; return UV_ENOSYS;
-}
-
-int uv_signal_start(uv_signal_t* handle, uv_signal_cb callback, int signum) {
-  (void)handle; (void)callback; (void)signum; return UV_ENOSYS;
-}
-
-int uv_signal_stop(uv_signal_t* handle) {
-  (void)handle; return UV_ENOSYS;
 }
 
 int uv_spawn(uv_loop_t* loop, uv_process_t* handle,
