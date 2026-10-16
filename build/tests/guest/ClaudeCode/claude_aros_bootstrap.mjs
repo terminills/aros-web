@@ -173,6 +173,17 @@ if (process.stdout.isTTY) {
   })
 }
 
+// AROS delivers no SIGWINCH yet (uv_signal is not implemented), so a resized
+// console never reaches Ink. tty.WriteStream._refreshSize() re-reads the window
+// size and emits 'resize' only when it changed: poll it until signals exist.
+if (process.stdout.isTTY && typeof process.stdout._refreshSize === 'function') {
+  setInterval(() => {
+    try {
+      process.stdout._refreshSize()
+    } catch {}
+  }, 500).unref()
+}
+
 const cliRel = 'runtime/node_modules/@anthropic-ai/claude-code/cli.js'
 process.argv[1] = process.argv[1].replace(/[^/:]*$/, cliRel)
 serialWrite('[CC] importing cli.js\n')
