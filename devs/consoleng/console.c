@@ -25,6 +25,7 @@
 #include <devices/inputevent.h>
 #include <devices/conunit.h>
 #include <devices/newstyle.h>
+#include <dos/consoleinfo.h>
 
 /* conunit.h pulls the PUBLIC <devices/console.h>, which is the stock
  * console.device's header and deliberately not modified by this device (see
@@ -61,6 +62,7 @@ static const UWORD SupportedCommands[] = {
     CMD_READ,
     CMD_WRITE,
     NSCMD_DEVICEQUERY,
+    CD_GETGEOMETRY,
     0
 };
 
@@ -563,6 +565,38 @@ ADD2OPENDEV(GM_UNIQUENAME(Open), 0) ADD2CLOSEDEV(GM_UNIQUENAME(Close), 0)
 #endif
         done_quick = FALSE;
 
+        break;
+
+    case CD_GETGEOMETRY:
+        if (!ioreq->io_Data || !ioreq->io_Unit ||
+            ioreq->io_Unit == (struct Unit *)CONU_LIBRARY)
+            error = IOERR_BADADDRESS;
+        else if (ioreq->io_Length < sizeof(struct ConsoleGeometry))
+            error = IOERR_BADLENGTH;
+        else
+        {
+            struct ConUnit *unit = (struct ConUnit *)ioreq->io_Unit;
+            struct ConsoleGeometry geometry;
+
+            /* The console task holds this lock while processing resize.
+               The open IO unit keeps the object alive during this query. */
+            ObtainSemaphore(&ConsoleDevice->consoleTaskLock);
+            geometry.cg_Size = sizeof(geometry);
+            geometry.cg_Version = CONSOLE_GEOMETRY_VERSION;
+            geometry.cg_Columns = unit->cu_XMax + 1;
+            geometry.cg_Rows = unit->cu_YMax + 1;
+            geometry.cg_Width = geometry.cg_Columns * unit->cu_XRSize;
+            geometry.cg_Height = geometry.cg_Rows * unit->cu_YRSize;
+            if (unit->cu_XMax < 0 || unit->cu_YMax < 0 ||
+                unit->cu_XRSize <= 0 || unit->cu_YRSize <= 0)
+                error = IOERR_BADADDRESS;
+            ReleaseSemaphore(&ConsoleDevice->consoleTaskLock);
+            if (!error)
+            {
+                CopyMem(&geometry, ioreq->io_Data, sizeof(geometry));
+                ioreq->io_Actual = sizeof(geometry);
+            }
+        }
         break;
 
     case CD_ASKKEYMAP:
