@@ -80,6 +80,7 @@ AROSFILES := \
     $(SRCDIR)/$(CURDIR)/aros-compat \
     $(SRCDIR)/$(CURDIR)/src-aros/aros \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-async \
+    $(SRCDIR)/$(CURDIR)/src-aros/aros-fsevent \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-getaddrinfo \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-net \
     $(SRCDIR)/$(CURDIR)/src-aros/aros-net-test \

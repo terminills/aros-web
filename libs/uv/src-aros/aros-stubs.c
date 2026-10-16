@@ -444,15 +444,6 @@ int uv_getnameinfo(uv_loop_t* loop, uv_getnameinfo_t* req,
   return UV_EAI_FAIL;
 }
 
-int uv_fs_event_init(uv_loop_t* loop, uv_fs_event_t* handle) {
-  (void)loop; (void)handle; return UV_ENOSYS;
-}
-
-int uv_fs_event_start(uv_fs_event_t* handle, uv_fs_event_cb callback,
-                      const char* path, unsigned int flags) {
-  (void)handle; (void)callback; (void)path; (void)flags; return UV_ENOSYS;
-}
-
 int uv_signal_init(uv_loop_t* loop, uv_signal_t* handle) {
   (void)loop; (void)handle; return UV_ENOSYS;
 }
@@ -881,8 +872,6 @@ int uv_tty_get_winsize(uv_tty_t* handle, int* width, int* height) {
   return 0;
 }
 
-/* --- fs events --- */
-void uv__fs_event_close(uv_fs_event_t* handle) { (void)handle; }
 
 /* --- loop fork --- */
 int  uv__io_fork(uv_loop_t* loop) { (void)loop; return 0; }
