@@ -153,7 +153,10 @@ process.on('uncaughtExceptionMonitor', (error, origin) => {
 
 // Claude Code is drawn for an xterm: give the console xterm's default
 // palette and a dark default background (OSC 4/10/11), and hand the console
-// back to the Workbench colours on exit (OSC 104/110/111).
+// back to the Workbench colours on exit (OSC 104/110/111). Ink draws relative
+// to the cursor and never clears, so start from a cleared window (scrollback
+// is kept): otherwise a previous session's cells show through wherever the
+// new UI does not draw.
 const xtermPalette = [
   '#000000', '#cd0000', '#00cd00', '#cdcd00', '#0000ee', '#cd00cd',
   '#00cdcd', '#e5e5e5', '#7f7f7f', '#ff0000', '#00ff00', '#ffff00',
@@ -162,10 +165,11 @@ const xtermPalette = [
 if (process.stdout.isTTY) {
   process.stdout.write(
     '\u001b]4;' + xtermPalette.map((c, i) => `${i};${c}`).join(';') + '\u0007' +
-    '\u001b]10;#ffffff\u0007\u001b]11;#000000\u0007'
+    '\u001b]10;#ffffff\u0007\u001b]11;#000000\u0007' +
+    '\u001b[0m\u001b[H\u001b[2J'
   )
   process.on('exit', () => {
-    process.stdout.write('\u001b]104\u0007\u001b]110\u0007\u001b]111\u0007')
+    process.stdout.write('\u001b[0m\u001b]104\u0007\u001b]110\u0007\u001b]111\u0007')
   })
 }
 
