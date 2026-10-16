@@ -648,8 +648,10 @@ static VOID console_getdefaultparams(Class *cl, Object *o,
         msg->Params[0] = 1;
         break;
     case C_CURSOR_POS:
-        msg->Params[0] = YCCP + 1;
-        msg->Params[1] = XCCP + 1;
+        /* xterm CUP defaults to the home position, not the current cell.
+           Full-screen clients commonly send ESC [ H before repainting. */
+        msg->Params[0] = 1;
+        msg->Params[1] = 1;
         break;
 
 /* FIXME: Autodocs state commands in between here, has params RKRM: Devs saye the do not */
