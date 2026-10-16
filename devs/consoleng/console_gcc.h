@@ -170,6 +170,9 @@ enum
     C_SET_OBSCURED,             /* tab hidden: state only, no rendering */
     C_RESET_OBSCURED,           /* tab shown: full refresh from cells */
 
+    C_SAVE_CURSOR,              /* ESC 7 (DECSC): position and attributes */
+    C_RESTORE_CURSOR,           /* ESC 8 (DECRC) */
+
     NUM_CONSOLE_COMMANDS
 };
 
@@ -255,6 +258,12 @@ struct intConUnit
        the terminating byte arrives, then prepended to the next write. */
     UBYTE pendingCSI[64];
     UWORD pendingCSILen;
+
+    /* Cursor and rendition saved by ESC 7, restored by ESC 8 */
+    WORD savedX, savedY;
+    BYTE savedFgPen, savedBgPen;
+    UBYTE savedTxFlags;
+    BOOL savedCursor;
 };
 
 /* The conFlags */

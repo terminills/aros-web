@@ -1283,6 +1283,44 @@ static VOID stdcon_docommand(Class *cl, Object *o,
             break;
         }
 
+    case C_SAVE_CURSOR:
+        ICU(o)->savedX = XCP;
+        ICU(o)->savedY = YCP;
+        ICU(o)->savedFgPen = CU(o)->cu_FgPen;
+        ICU(o)->savedBgPen = CU(o)->cu_BgPen;
+        ICU(o)->savedTxFlags = CU(o)->cu_TxFlags;
+        ICU(o)->savedCursor = TRUE;
+        break;
+
+    case C_RESTORE_CURSOR:
+        ICU(o)->conFlags &= ~CF_WRAP_PENDING;
+        {
+            /* Nothing saved: xterm restores the home position. */
+            WORD x = ICU(o)->savedCursor ? ICU(o)->savedX : CHAR_XMIN(o);
+            WORD y = ICU(o)->savedCursor ? ICU(o)->savedY : CHAR_YMIN(o);
+
+            if (x < CHAR_XMIN(o))
+                x = CHAR_XMIN(o);
+            else if (x > CHAR_XMAX(o))
+                x = CHAR_XMAX(o);
+            if (y < CHAR_YMIN(o))
+                y = CHAR_YMIN(o);
+            else if (y > CHAR_YMAX(o))
+                y = CHAR_YMAX(o);
+
+            Console_UnRenderCursor(o);
+            XCCP = XCP = x;
+            YCCP = YCP = y;
+            if (ICU(o)->savedCursor)
+            {
+                CU(o)->cu_FgPen = ICU(o)->savedFgPen;
+                CU(o)->cu_BgPen = ICU(o)->savedBgPen;
+                CU(o)->cu_TxFlags = ICU(o)->savedTxFlags;
+            }
+            Console_RenderCursor(o);
+            break;
+        }
+
     default:
         DoSuperMethodA(cl, o, (Msg) msg);
         break;

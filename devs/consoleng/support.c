@@ -670,6 +670,15 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         }
     }
 
+    /* DECSC / DECRC: ESC 7 saves, ESC 8 restores the cursor */
+    if (*write_str == ESC && toparse >= 2 &&
+        (write_str[1] == '7' || write_str[1] == '8'))
+    {
+        *cmd_ptr = (write_str[1] == '7') ? C_SAVE_CURSOR : C_RESTORE_CURSOR;
+        *writestr_ptr = write_str + 2;
+        ReturnBool("StringToCommand", TRUE);
+    }
+
     /* OSC start: ESC ] (or C1 0x9D outside UTF-8 mode) */
     if ((*write_str == ESC && toparse >= 2 && write_str[1] == ']') ||
         (!utf8 && *write_str == 0x9D))
