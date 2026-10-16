@@ -502,8 +502,8 @@ diff -ruN libuv-v1.48.0.orig/src/unix/core.c libuv-v1.48.0/src/unix/core.c
  
    if (len >= *size) {
 diff -ruN libuv-v1.48.0.orig/src/unix/fs.c libuv-v1.48.0/src/unix/fs.c
---- libuv-v1.48.0.orig/src/unix/fs.c	2024-02-07 14:20:07.000000000 -0600
-+++ libuv-v1.48.0/src/unix/fs.c	2026-09-08 10:03:39.650283371 -0500
+--- libuv-v1.48.0.orig/src/unix/fs.c
++++ libuv-v1.48.0/src/unix/fs.c
 @@ -29,6 +29,11 @@
  #include "uv.h"
  #include "internal.h"
@@ -516,7 +516,17 @@ diff -ruN libuv-v1.48.0.orig/src/unix/fs.c libuv-v1.48.0/src/unix/fs.c
  #include <errno.h>
  #include <dlfcn.h>
  #include <stdio.h>
-@@ -1602,10 +1607,36 @@
+@@ -1038,7 +1043,8 @@
+     || defined(__DragonFly__)                                                 \
+     || defined(__FreeBSD__)                                                   \
+     || defined(__NetBSD__)                                                    \
+-    || defined(__OpenBSD__)
++    || defined(__OpenBSD__)                                                   \
++    || defined(__AROS__)
+   struct timeval tv[2];
+   tv[0] = uv__fs_to_timeval(req->atime);
+   tv[1] = uv__fs_to_timeval(req->mtime);
+@@ -1602,10 +1608,36 @@
  #undef X
    } while (r == -1 && errno == EINTR && retry_on_eintr);
  

@@ -16,6 +16,12 @@ try {
   mkdirSync(logDir, { recursive: true })
 } catch {}
 const consoleLog = `${logDir}/claude-console.log`
+// Bootstrap notes go to a file: on the console they would be drawn over the UI.
+const bootstrapLog = text => {
+  try {
+    appendFileSync(`${logDir}/claude-bootstrap.log`, `${text}\n`)
+  } catch {}
+}
 try {
   writeFileSync(consoleLog, '')
 } catch {}
@@ -128,7 +134,7 @@ const originalOnce = process.once
 
 process.on = process.addListener = function (event, listener) {
   if (isSignalEvent(event)) {
-    process.stderr.write(`[AROS] deferred signal listener: ${event}\n`)
+    bootstrapLog(`deferred signal listener: ${event}`)
     return this
   }
   return originalOn.call(this, event, listener)
@@ -136,7 +142,7 @@ process.on = process.addListener = function (event, listener) {
 
 process.once = function (event, listener) {
   if (isSignalEvent(event)) {
-    process.stderr.write(`[AROS] deferred one-shot signal listener: ${event}\n`)
+    bootstrapLog(`deferred one-shot signal listener: ${event}`)
     return this
   }
   return originalOnce.call(this, event, listener)
@@ -184,8 +190,10 @@ if (process.stdout.isTTY && typeof process.stdout._refreshSize === 'function') {
   }, 500).unref()
 }
 
-const cliRel = 'runtime/node_modules/@anthropic-ai/claude-code/cli.js'
+// CLAUDE_AROS_CLI names another entry point beside this file (relative), for
+// trying a different Claude Code build with the same AROS set-up.
+const cliRel = process.env.CLAUDE_AROS_CLI || 'runtime/node_modules/@anthropic-ai/claude-code/cli.js'
 process.argv[1] = process.argv[1].replace(/[^/:]*$/, cliRel)
-serialWrite('[CC] importing cli.js\n')
+serialWrite(`[CC] importing ${cliRel}\n`)
 await import(`./${cliRel}`)
-serialWrite('[CC] cli.js import returned\n')
+serialWrite(`[CC] ${cliRel} import returned\n`)
