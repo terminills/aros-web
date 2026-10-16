@@ -1271,6 +1271,20 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  #if defined(ZSTD_MULTITHREAD) && defined(_WIN32)
  
  /**
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/internal/modules/cjs/loader.js node-v22.23.1/lib/internal/modules/cjs/loader.js
+--- node-v22.23.1/lib/internal/modules/cjs/loader.js
++++ node-v22.23.1/lib/internal/modules/cjs/loader.js
+@@ -1977,7 +1977,9 @@
+   let filepath, fileURL;
+ 
+   if (isURL(filenameOrURL) ||
+-      (typeof filenameOrURL === 'string' && !path.isAbsolute(filenameOrURL))) {
++      (typeof filenameOrURL === 'string' &&
++       (StringPrototypeStartsWith(filenameOrURL, 'file://') ||
++        !path.isAbsolute(filenameOrURL)))) {
+     try {
+       // It might be an URL, try to convert it.
+       // If it's a relative path, it would not parse and would be considered invalid per
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/internal/url.js node-v22.23.1/lib/internal/url.js
 --- node-v22.23.1/lib/internal/url.js	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/lib/internal/url.js	2026-07-26 09:10:18.096670051 -0500
