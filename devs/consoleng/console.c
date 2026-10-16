@@ -251,8 +251,6 @@ static struct Window *ConsolengOpenOwnWindow(LIBBASETYPEPTR ConsoleDevice,
 
         if (w < 200) w = 200;
         if (h < 120) h = 120;
-        if (w > 720) w = 720;
-        if (h > 480) h = 480;
 
         wintags[2].ti_Data = (IPTR)w;
         wintags[3].ti_Data = (IPTR)h;
