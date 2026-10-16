@@ -53,6 +53,40 @@ process.on('unhandledRejection', reason => {
 mirrorWrites(process.stdout)
 mirrorWrites(process.stderr)
 
+// CLAUDE_AROS_TRACE_EXIT=1: after the UI has given the terminal back (Ink's
+// ESC[?2004l), report every 2 s whether the event loop still runs and what
+// keeps it alive, and when exit is requested and reached.
+if (process.env.CLAUDE_AROS_TRACE_EXIT) {
+  const started = Date.now()
+  const stamp = () => `${((Date.now() - started) / 1000).toFixed(1)}s`
+  const handles = () => {
+    const names = {}
+    for (const h of process._getActiveHandles()) {
+      const name = h?.constructor?.name ?? typeof h
+      names[name] = (names[name] ?? 0) + 1
+    }
+    return JSON.stringify(names)
+  }
+  let ticking = false
+  const originalWrite = process.stdout.write
+  process.stdout.write = function (chunk, ...rest) {
+    if (!ticking && String(chunk).includes('\u001b[?2004l')) {
+      ticking = true
+      serialWrite(`[CC] ${stamp()} terminal released, handles ${handles()}\n`)
+      setInterval(() => {
+        serialWrite(`[CC] ${stamp()} loop alive, handles ${handles()} requests ${process._getActiveRequests().length}\n`)
+      }, 2000).unref()
+    }
+    return originalWrite.call(this, chunk, ...rest)
+  }
+  const originalExit = process.exit
+  process.exit = function (code) {
+    serialWrite(`[CC] ${stamp()} process.exit(${code}) from ${new Error().stack.split('\n')[2]?.trim()}\n`)
+    return originalExit.call(this, code)
+  }
+  process.on('exit', code => serialWrite(`[CC] ${stamp()} exit event ${code}\n`))
+}
+
 const ttyState = {
   stdin: process.stdin.isTTY ?? false,
   stdout: process.stdout.isTTY ?? false,
