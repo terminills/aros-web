@@ -28,7 +28,8 @@ include $(SRCDIR)/config/aros.cfg
     dst=$(AROS_S)
 
 # npm itself is the copy Node's tarball carries in deps/npm, installed where
-# npm_bootstrap.js loads it from, with npm-$(NPMVERSION)-aros.diff applied.
+# npm_bootstrap.js loads it from, with npm-$(NPMVERSION)-aros.diff applied, and
+# registered as a package so InstallAROS installs it with the system.
 NPMVERSION := 10.9.8
 NPM_SRCDIR := $(PORTSDIR)/node/node/node-v22.23.1/deps/npm
 NPM_DEST := $(AROSDIR)/Lib/node_modules/npm
@@ -42,6 +43,8 @@ $(NPM_STAMP) : $(SRCDIR)/$(CURDIR)/npm-$(NPMVERSION)-aros.diff $(NPM_SRCDIR)/pac
 	$(Q)$(MKDIR) -p $(dir $(NPM_DEST)) $(dir $@)
 	$(Q)$(CP) -R $(NPM_SRCDIR) $(NPM_DEST)
 	$(Q)patch -s -d $(NPM_DEST) -p1 < $<
+	$(Q)$(MKDIR) -p $(AROSDIR)/Prefs/Env-Archive/SYS/Packages
+	$(Q)printf 'SYS:Lib/node_modules/npm' > $(AROSDIR)/Prefs/Env-Archive/SYS/Packages/npm
 	$(Q)$(TOUCH) $@
 
 #MM workbench-libs-node-git-remote-https : workbench-libs-node workbench-libs-node-git-remote-https-script
