@@ -1286,9 +1286,9 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
        // It might be an URL, try to convert it.
        // If it's a relative path, it would not parse and would be considered invalid per
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/internal/url.js node-v22.23.1/lib/internal/url.js
---- node-v22.23.1/lib/internal/url.js	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/lib/internal/url.js	2026-07-26 09:10:18.096670051 -0500
-@@ -1572,7 +1572,17 @@
+--- node-v22.23.1/lib/internal/url.js
++++ node-v22.23.1/lib/internal/url.js
+@@ -1572,7 +1572,22 @@
      }
    }
    // Fast-path: if there is no percent-encoding, avoid decodeURIComponent.
@@ -1300,6 +1300,11 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +    const firstSeparator = StringPrototypeIndexOf(decodedPathname, '/', 1);
 +    if (volumeEnd > 1 &&
 +        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
++      // "/Work:/x" is "Work:x": the volume is the root
++      if (firstSeparator === volumeEnd + 1) {
++        return StringPrototypeSlice(decodedPathname, 1, volumeEnd + 1) +
++          StringPrototypeSlice(decodedPathname, volumeEnd + 2);
++      }
 +      return StringPrototypeSlice(decodedPathname, 1);
 +    }
 +  }
@@ -1307,7 +1312,7 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  }
  
  function getPathBufferFromURLPosix(url) {
-@@ -1592,9 +1602,28 @@
+@@ -1592,9 +1607,37 @@
    // literally into the returned Buffer. We're going to do the best we can and
    // just interpret the input url as a sequence of bytes.
    const u8 = percentDecode(Buffer.from(pathname, 'utf8'));
@@ -1333,12 +1338,34 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +        (firstSeparator === -1 || volumeEnd < firstSeparator)) {
 +      byteOffset++;
 +      byteLength--;
++      // "/Work:/x" is "Work:x": the volume is the root
++      if (volumeEnd + 1 < u8.length && u8[volumeEnd + 1] === CHAR_FORWARD_SLASH) {
++        const volume = Buffer.from(TypedArrayPrototypeGetBuffer(u8),
++                                   byteOffset, volumeEnd);
++        const rest = Buffer.from(TypedArrayPrototypeGetBuffer(u8),
++                                 byteOffset + volumeEnd + 1,
++                                 byteLength - volumeEnd - 1);
++        return Buffer.concat([volume, rest]);
++      }
 +    }
 +  }
 +  return Buffer.from(TypedArrayPrototypeGetBuffer(u8), byteOffset, byteLength);
  }
  
  function fileURLToPath(path, options = kEmptyObject) {
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/os.js node-v22.23.1/lib/os.js
+--- node-v22.23.1/lib/os.js
++++ node-v22.23.1/lib/os.js
+@@ -191,7 +191,8 @@
+     return path;
+   }
+ 
+-  return getTempDir() || '/tmp';
++  // AROS has no /tmp; T: is the system's temporary directory
++  return getTempDir() || (process.platform === 'aros' ? 'T:' : '/tmp');
+ }
+ tmpdir[SymbolToPrimitive] = () => tmpdir();
+ 
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/lib/path.js node-v22.23.1/lib/path.js
 --- node-v22.23.1/lib/path.js	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/lib/path.js	2026-10-16 19:50:00.000000000 -0500
@@ -3836,9 +3863,9 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
  static void GetCategoryEnabledBuffer(const FunctionCallbackInfo<Value>& args) {
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/node_url.cc node-v22.23.1/src/node_url.cc
---- node-v22.23.1/src/node_url.cc	2026-06-23 11:27:43.000000000 -0500
-+++ node-v22.23.1/src/node_url.cc	2026-07-26 08:55:46.470058735 -0500
-@@ -122,7 +122,19 @@
+--- node-v22.23.1/src/node_url.cc
++++ node-v22.23.1/src/node_url.cc
+@@ -122,10 +122,43 @@
  enum class OS { WINDOWS, POSIX };
  
  std::string EncodePathChars(std::string_view input_str, OS operating_system) {
@@ -3857,8 +3884,32 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +#endif
    encoded.reserve(input_str.size() +
                    7);  // Reserve space for "file://" and input_str
++#ifdef __AROS__
++  /*
++   * The volume is the root, so "Work:x.mjs" becomes "file:///Work:/x.mjs".
++   * Without the slash the volume and the first name are one URL segment and
++   * relative URLs ("./y.mjs") replace the volume as well.
++   */
++  bool aros_volume_pending = aros_volume_path;
++  bool aros_after_volume = false;
++#endif
    for (size_t i : input_str) {
-@@ -665,7 +677,20 @@
++#ifdef __AROS__
++    if (aros_after_volume) {
++      aros_after_volume = false;
++      if (i == '/') continue;
++    }
++    if (aros_volume_pending && i == ':') {
++      aros_volume_pending = false;
++      aros_after_volume = true;
++      encoded.append(":/");
++      continue;
++    }
++#endif
+     if (i > LARGEST_ASCII_CHAR_CODE_TO_ENCODE) [[unlikely]] {
+       encoded.push_back(i);
+       continue;
+@@ -665,7 +698,23 @@
      }
    }
  
@@ -3873,6 +3924,9 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
 +        (first_separator == std::string::npos ||
 +         volume_end < first_separator)) {
 +      decoded_pathname.erase(0, 1);
++      if (decoded_pathname.size() > volume_end &&
++          decoded_pathname[volume_end] == '/')
++        decoded_pathname.erase(volume_end, 1);
 +    }
 +  }
 +#endif
@@ -4042,6 +4096,47 @@ diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x c
  
    std::unique_ptr<NodeTraceStateObserver> trace_state_observer_;
    std::unique_ptr<tracing::Agent> tracing_agent_;
+diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/path.cc node-v22.23.1/src/path.cc
+--- node-v22.23.1/src/path.cc
++++ node-v22.23.1/src/path.cc
+@@ -245,10 +245,25 @@
+   auto cwd = env->GetCwd(env->exec_path());
+   const size_t numArgs = paths.size();
+ 
++#ifdef __AROS__
++  // A volume ("Work:") is a root, like the leading slash (see lib/path.js)
++  std::string resolvedVolume;
++#endif
++
+   for (int i = numArgs - 1; i >= -1 && !resolvedAbsolute; i--) {
+     const std::string& path = (i >= 0) ? std::string(paths[i]) : cwd;
+ 
+     if (!path.empty()) {
++#ifdef __AROS__
++      size_t volumeEnd = path.find(':');
++      if (volumeEnd != std::string::npos && volumeEnd > 0 &&
++          volumeEnd < path.find('/')) {
++        resolvedVolume = path.substr(0, volumeEnd + 1);
++        resolvedPath = path.substr(volumeEnd + 1) + "/" + resolvedPath;
++        resolvedAbsolute = true;
++        break;
++      }
++#endif
+       resolvedPath = std::string(path) + "/" + resolvedPath;
+ 
+       if (path.front() == '/') {
+@@ -261,6 +276,11 @@
+   // Normalize the path
+   auto normalizedPath = NormalizeString(resolvedPath, !resolvedAbsolute, "/");
+ 
++#ifdef __AROS__
++  if (!resolvedVolume.empty()) {
++    return resolvedVolume + normalizedPath;
++  }
++#endif
+   if (resolvedAbsolute) {
+     return "/" + normalizedPath;
+   }
 diff -ruN -x out -x '.git*' -x node_modules -x config.gypi -x config.status -x config.mk -x icu_config.gypi -x '*.pyc' -x __pycache__ -x '*.pyo' -x '*.pristine' -x '*.orig' -x '*.rej' -x '*.bak' node-v22.23.1/src/threadpoolwork-inl.h node-v22.23.1/src/threadpoolwork-inl.h
 --- node-v22.23.1/src/threadpoolwork-inl.h	2026-06-23 11:27:43.000000000 -0500
 +++ node-v22.23.1/src/threadpoolwork-inl.h	2026-09-16 12:31:00.000000000 -0500
