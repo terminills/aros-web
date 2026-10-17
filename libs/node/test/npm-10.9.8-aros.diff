@@ -1,0 +1,18 @@
+--- a/node_modules/cacache/lib/util/hash-to-segments.js
++++ b/node_modules/cacache/lib/util/hash-to-segments.js
+@@ -2,6 +2,14 @@
+ 
+ module.exports = hashToSegments
+ 
++// AROS filesystems hold names of up to 107 characters; a sha512 hex digest
++// split 2/2/124 does not fit, so long digests split 2/64/rest. verify.js
++// rebuilds the digest from the last three segments either way.
++const MAX_SEGMENT = 100
++
+ function hashToSegments (hash) {
+-  return [hash.slice(0, 2), hash.slice(2, 4), hash.slice(4)]
++  if (hash.length - 4 <= MAX_SEGMENT) {
++    return [hash.slice(0, 2), hash.slice(2, 4), hash.slice(4)]
++  }
++  return [hash.slice(0, 2), hash.slice(2, 66), hash.slice(66)]
+ }
