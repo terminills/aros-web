@@ -31,11 +31,11 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     path=libraries dir=include/libraries includes=$(ELECTRON_PUBLIC_INCLUDES)
 
 #MM workbench-libs-electron : workbench-libs-electron-public-includes \
-#MM     workbench-libs-node workbench-libs-cef
+#MM     workbench-libs-node workbench-libs-cef workbench-libs-application
 %build_module mmake=workbench-libs-electron \
     modname=electron modtype=library \
     conffile=electron.conf \
-    files=electron_bridge \
+    files="electron_bridge electron_notify" \
     cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE) $(CHROME_VERSION_DEFS)" \
     uselibs="node cef v8 intuition dos"
 

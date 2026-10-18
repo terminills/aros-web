@@ -48,6 +48,7 @@
 #include "include/capi/cef_v8_capi.h"
 
 #include "electron_libdefs.h"
+#include "electron_notify.h"
 
 #define AROS_ELECTRON_VERSION "0.1.0-aros"
 #define ELECTRON_REQUEST_CAPACITY 64
@@ -1841,10 +1842,67 @@ static const char electron_module_bootstrap[] =
     "setTimeout(()=>autoUpdater.emit('update-not-available'),0);"
     "};"
     "autoUpdater.quitAndInstall=()=>app.quit();"
+    /* Notification: pop-ups through application.library and the AROS
+       notification server, so they follow Prefs/Notifications and land in
+       its log. A double-click is 'click'; every way a pop-up goes away -
+       timed out, dismissed, double-clicked, close() - is 'close'. The
+       server reports those to the app's port, which is polled only while
+       notifications are open. Actions and inline replies have no
+       counterpart in the pop-ups, so they are not offered. */
+    "const openNotifications=new Map();"
+    "let notificationSeq=0,notificationTimer=null;"
+    "const notificationEncode=value=>encodeURIComponent(value===undefined||value===null?'':String(value));"
+    "const pollNotifications=()=>{"
+    "const events=binding.invoke('notification.poll',appName)||'';"
+    "for(const line of events.split('\\n')){"
+    "if(line.length<3)continue;"
+    "const id=Number(line.slice(2)),n=openNotifications.get(id);"
+    "if(!n)continue;"
+    "if(line[0]==='c')n.emit('click',{});"
+    "else{openNotifications.delete(id);n._id=0;n.emit('close',{});}"
+    "}"
+    "if(!openNotifications.size&&notificationTimer){"
+    "clearInterval(notificationTimer);notificationTimer=null;}"
+    "};"
+    "class Notification extends EventEmitter{"
+    "constructor(options){"
+    "super();options=options||{};"
+    "this.title=String(options.title||'');"
+    "this.subtitle=String(options.subtitle||'');"
+    "this.body=String(options.body||'');"
+    "this.icon=options.icon;"
+    "this.silent=!!options.silent;"
+    "this.sound=options.sound?String(options.sound):'';"
+    "this.urgency=options.urgency||'normal';"
+    "this.timeoutType=options.timeoutType||'default';"
+    "this.hasReply=false;this.replyPlaceholder='';this.closeButtonText='';"
+    "this.actions=[];this.toastXml='';this._id=0;"
+    "}"
+    "static isSupported(){return binding.invoke('notification.supported','')==='yes';}"
+    "show(){"
+    "if(this._id)this.close();"
+    "const id=++notificationSeq;"
+    "const icon=typeof this.icon==='string'?this.icon:"
+    "(this.icon&&typeof this.icon.getFilePath==='function'?this.icon.getFilePath():'');"
+    "const text=this.subtitle?this.subtitle+(this.body?'\\n'+this.body:''):this.body;"
+    "const result=binding.invoke('notification.show',[appName,id,this.title,text,icon,"
+    "this.urgency,this.timeoutType,this.silent?'':this.sound].map(notificationEncode).join('\\t'));"
+    "if(result==='ok'){"
+    "this._id=id;openNotifications.set(id,this);"
+    "if(!notificationTimer)notificationTimer=setInterval(pollNotifications,250);"
+    "setImmediate(()=>this.emit('show',{}));"
+    "}else setImmediate(()=>this.emit('failed',{},result));"
+    "}"
+    "close(){"
+    "if(this._id)binding.invoke('notification.close',"
+    "[appName,this._id].map(notificationEncode).join('\\t'));"
+    "}"
+    "}"
+    "app.on('will-quit',()=>{binding.invoke('notification.release',appName);});"
     "const api=Object.freeze({"
     "app,native,BrowserWindow,WebContents,webContents,Menu,MenuItem,protocol,session,"
     "dialog,ipcMain,nativeTheme,powerMonitor,crashReporter,screen,shell,autoUpdater,"
-    "MessageChannelMain,MessagePortMain,utilityProcess"
+    "MessageChannelMain,MessagePortMain,utilityProcess,Notification"
     "});"
     "const load=require;"
     "const Module=load('node:module');"
@@ -1968,6 +2026,19 @@ static CONST_STRPTR electron_node_invoke(CONST_STRPTR method,
             CloseLibrary((struct Library *)ib);
         }
         return "beeped";
+    }
+    if (method != NULL && strncmp(method, "notification.", 13) == 0)
+    {
+        if (strcmp(method + 13, "supported") == 0)
+            return electron_notification_supported() ? "yes" : "no";
+        if (strcmp(method + 13, "show") == 0)
+            return electron_notification_show(payload);
+        if (strcmp(method + 13, "close") == 0)
+            return electron_notification_close(payload);
+        if (strcmp(method + 13, "poll") == 0)
+            return electron_notification_poll(payload);
+        if (strcmp(method + 13, "release") == 0)
+            return electron_notification_release(payload);
     }
     if (method != NULL && strcmp(method, "screen.snapshot") == 0)
         return electron_screen_snapshot();
