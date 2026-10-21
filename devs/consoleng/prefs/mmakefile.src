@@ -1,0 +1,15 @@
+include $(SRCDIR)/config/aros.cfg
+
+#MM- workbench-prefs : workbench-prefs-consoleng
+#MM workbench-prefs-consoleng : includes linklibs workbench-prefs-consoleng-startup-script workbench-prefs-consoleng-startup-package
+
+USER_CPPFLAGS := -I$(SRCDIR)/workbench/devs/consoleng/include
+%build_prog mmake=workbench-prefs-consoleng \
+    progname=ConsoleNG targetdir=$(AROSDIR)/Prefs files=main
+
+%copy_files_q mmake=workbench-prefs-consoleng-startup-script \
+    files="ConsoleNG-Startup ConsoleNG-Shell ConsoleNG-Mountlist" dst=$(AROSDIR)/S
+%copy_files_q mmake=workbench-prefs-consoleng-startup-package \
+    files=ConsoleNG src=package dst=$(AROSDIR)/Prefs/Env-Archive/SYS/Packages
+
+%common

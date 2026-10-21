@@ -11,6 +11,7 @@
 #include <proto/exec.h>
 #include <exec/lists.h>
 #include <exec/io.h>
+#include <exec/errors.h>
 #include <exec/memory.h>
 
 #include <proto/intuition.h>
@@ -27,6 +28,18 @@
 static BOOL getparamcommand(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     UBYTE *numparams_ptr, LONG toparse, IPTR *p_tab, Object *unit,
     struct ConsoleBase *ConsoleDevice);
+static BOOL getansimodecommand(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, Object *unit);
+static BOOL getstatusrequest(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params, BOOL native);
+static BOOL getscrollregion(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params);
+static BOOL getabsolutecommand(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params);
+static BOOL getmoderequest(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, Object *unit, struct ConsoleBase *ConsoleDevice);
+static BOOL getcursorstylecommand(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, IPTR *params);
 static BOOL getdecprivatecommand(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     LONG toparse, Object *unit);
 static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
@@ -71,8 +84,9 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
    without its continuations) is taken as ONE Latin-1 character, so a
    legacy 8-bit producer writing to a UTF-8 unit (the default for this
    device) still shows its accented letters instead of '?'; only a
-   sequence that is truly cut off at the end of the span becomes '?', and
-   WriteToConsole() stashes such tails across CMD_WRITEs before it gets
+   sequence cut off at the end of the span, or a complete sequence that
+   is overlong or does not encode a Unicode scalar, becomes '?'.
+   WriteToConsole() stashes incomplete tails across CMD_WRITEs before they get
    here.  graphics.library TextUTF8() keeps its stricter '?' policy. */
 ULONG con_utf8_decode(const UBYTE **sp, LONG *left)
 {
@@ -132,6 +146,13 @@ ULONG con_utf8_decode(const UBYTE **sp, LONG *left)
 
     *sp = p + need;
     *left = n - need;
+    /* Complete encodings must be shortest-form Unicode scalars. Keep the
+     * separate legacy-byte fallback above; malformed encodings must not
+     * create NUL cells, surrogate glyph requests or out-of-range values. */
+    if ((need == 2 && cp < 0x80) || (need == 3 && cp < 0x800) ||
+        (need == 4 && cp < 0x10000) || (cp >= 0xd800 && cp <= 0xdfff) ||
+        cp > 0x10ffff)
+        return '?';
     return cp;
 }
 
@@ -233,8 +254,47 @@ static WORD utf8_seqlen(UBYTE lead)
     return 1;
 }
 
-/* Accumulate an OSC string (started by ESC ] or C1 0x9D) until BEL or the
-   ESC-backslash ST terminator, across CMD_WRITEs if necessary. On
+/* Unsupported device/application/privacy strings share a bounded discard
+ * path. Legacy C1 introducers must never steal UTF-8 continuation bytes. */
+static LONG discard_prefix(UBYTE *str, LONG length, BOOL utf8)
+{
+    if (length >= 2 && str[0] == ESC &&
+        (str[1] == 'P' || str[1] == 'X' || str[1] == '^' || str[1] == '_'))
+        return 2;
+    if (length >= 1 && !utf8 &&
+        (str[0] == 0x90 || str[0] == 0x98 || str[0] == 0x9e || str[0] == 0x9f))
+        return 1;
+    return 0;
+}
+
+/* Unsupported DCS/SOS/PM/APC strings are discarded without buffering.
+ * ESC returns to normal escape dispatch, which handles ST and split escapes.
+ * BEL is payload here, unlike OSC. C1 ST is only a control outside UTF-8. */
+static LONG consume_dcs(Object *unit, UBYTE *str, LONG length)
+{
+    LONG used = 0;
+    while (used < length)
+    {
+        UBYTE b = str[used];
+        if (b == ESC)
+        {
+            ICU(unit)->dcsDiscard = FALSE;
+            break;
+        }
+        used++;
+        if (b == 0x18 || b == 0x1a ||
+            (b == 0x9c && !CON_IS_UTF8(unit)))
+        {
+            ICU(unit)->dcsDiscard = FALSE;
+            break;
+        }
+    }
+    return used;
+}
+
+/* Accumulate an OSC string (started by ESC ] or C1 0x9D) until BEL,
+   CAN/SUB or ESC, across CMD_WRITEs if necessary. ESC stays unconsumed for
+   normal escape dispatch (including the ESC-backslash ST terminator). On
    completion, OSC 50 ("50;fontname[,size]") becomes C_SET_FONT with the
    NUL-terminated name (inside the unit's oscBuf) and the size as params.
    Everything else is consumed silently (C_NIL). Returns the number of
@@ -244,7 +304,7 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
 {
     struct intConUnit *icu = ICU(unit);
     LONG used = 0;
-    BOOL done = FALSE;
+    BOOL done = FALSE, control_end = FALSE;
 
     *cmd_ptr = C_NIL;
 
@@ -252,28 +312,43 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
     {
         UBYTE b = str[used++];
 
-        if (icu->oscState == OSC_GOT_ESC)
+        if (b == 0x07 || b == 0x18 || b == 0x1A)
         {
-            /* ESC \ = ST; any other ESC sequence aborts the OSC */
-            done = TRUE;
-            if (b != '\\')
-                icu->oscLen = 0;
-        }
-        else if (b == 0x07)
-        {
+            /* CAN/SUB dispatch the collected OSC and return to ground. */
+            control_end = b != 0x07;
             done = TRUE;
         }
         else if (b == ESC)
         {
-            icu->oscState = OSC_GOT_ESC;
+            /* Dispatch at ESC, then let the normal parser consume the new
+             * escape sequence (including ST). Leave ESC in the input so the
+             * existing partial-sequence stash also handles split writes. */
+            used--;
+            control_end = TRUE;
+            done = TRUE;
         }
         else if (b == 0x9C && !CON_IS_UTF8(unit))
         {
+            control_end = TRUE;
             done = TRUE;
+        }
+        else if (b < 0x20 && b != 0x18 && b != 0x1A)
+        {
+            /* OSC ignores C0 controls other than its terminators and CAN/SUB.
+             * In particular NUL must not truncate the eventual C string, nor
+             * may ignored controls consume payload capacity. */
         }
         else if (icu->oscState == OSC_COLLECT)
         {
-            if (icu->oscLen < CON_OSCBUF_SIZE - 1)
+            if (icu->oscLen == 3 && !memcmp(icu->oscBuf, "52;", 3))
+            {
+                con_osc_clipboard_byte(icu, b);
+                continue;
+            }
+            /* Keep existing title/font/color limits; OSC8 uses the static buffer. */
+            ULONG limit = icu->oscLen >= 2 && icu->oscBuf[0] == '8' &&
+                icu->oscBuf[1] == ';' ? CON_OSCBUF_SIZE : 256;
+            if (icu->oscLen < limit - 1)
                 icu->oscBuf[icu->oscLen++] = b;
             else
                 icu->oscState = OSC_OVERFLOW;
@@ -282,7 +357,8 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
 
     if (done)
     {
-        BOOL st = (icu->oscState == OSC_GOT_ESC);
+        BOOL st = control_end || (icu->oscState == OSC_GOT_ESC || icu->oscState == OSC_OVERFLOW_ESC);
+        BOOL overflow = (icu->oscState == OSC_OVERFLOW || icu->oscState == OSC_OVERFLOW_ESC);
         ULONG code = 0;
         WORD n = 0;
 
@@ -290,8 +366,23 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
         while (n < 4 && icu->oscBuf[n] >= '0' && icu->oscBuf[n] <= '9')
             code = code * 10 + (icu->oscBuf[n++] - '0');
 
+        if (icu->oscLen == 3 && !memcmp(icu->oscBuf, "52;", 3))
+        {
+            *cmd_ptr = C_SET_OSC_CLIPBOARD;
+            *numparams_ptr = 1;
+            p_tab[0] = st;
+        }
+        /* A completed oversized OSC8 closes the old link, never applies a
+         * truncated destination to subsequent text. */
+        else if (icu->oscLen >= 2 && icu->oscBuf[0] == '8' && icu->oscBuf[1] == ';')
+        {
+            *cmd_ptr = C_SET_HYPERLINK;
+            *numparams_ptr = 2;
+            p_tab[0] = overflow ? 0 : (IPTR)(icu->oscBuf + 2);
+            p_tab[1] = overflow ? 0 : icu->oscLen - 2;
+        }
         /* OSC 0/2: set window/tab title (xterm) */
-        if (icu->oscState != OSC_OVERFLOW && icu->oscLen > 1 &&
+        else if (!overflow && icu->oscLen > 1 &&
             (icu->oscBuf[0] == '0' || icu->oscBuf[0] == '2') &&
             icu->oscBuf[1] == ';')
         {
@@ -299,24 +390,47 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
             *numparams_ptr = 1;
             p_tab[0] = (IPTR) (icu->oscBuf + 2);
         }
-        else if (icu->oscState != OSC_OVERFLOW && icu->oscLen > 3 &&
+        else if (!overflow && icu->oscLen >= 15 &&
+            !memcmp(icu->oscBuf, "50;CursorShape=", 15))
+        {
+            /* Alacritty's OSC50 shape form coexists with the native font
+             * extension below. Unknown shapes are ignored, never font names. */
+            if (icu->oscLen > 15 && icu->oscBuf[15] >= '0' && icu->oscBuf[15] <= '2')
+            {
+                *cmd_ptr = C_SET_CURSOR_SHAPE;
+                *numparams_ptr = 1;
+                p_tab[0] = icu->oscBuf[15] - '0';
+            }
+        }
+        else if (!overflow && icu->oscLen > 3 &&
             icu->oscBuf[0] == '5' && icu->oscBuf[1] == '0' &&
             icu->oscBuf[2] == ';')
         {
             UBYTE *name = icu->oscBuf + 3;
             UBYTE *p = name;
             IPTR size = 0;
+            BOOL valid_size = TRUE;
 
             while (*p && *p != ',')
                 p++;
             if (*p == ',')
             {
                 *p++ = '\0';
+                /* TextAttr.ta_YSize is UWORD. Reject overflow and malformed
+                   tails instead of wrapping IPTR or silently truncating it. */
+                valid_size = *p >= '0' && *p <= '9';
                 while (*p >= '0' && *p <= '9')
-                    size = size * 10 + (*p++ - '0');
+                {
+                    ULONG digit = *p++ - '0';
+                    if (size > (65535 - digit) / 10)
+                        valid_size = FALSE;
+                    else if (valid_size)
+                        size = size * 10 + digit;
+                }
+                if (*p) valid_size = FALSE;
             }
 
-            if (*name)
+            if (*name && valid_size)
             {
                 *cmd_ptr = C_SET_FONT;
                 *numparams_ptr = 2;
@@ -324,10 +438,10 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
                 p_tab[1] = size;
             }
         }
-        else if (icu->oscState != OSC_OVERFLOW && n > 0 &&
+        else if (!overflow && n > 0 &&
             (icu->oscBuf[n] == ';' || icu->oscBuf[n] == '\0') &&
-            (code == 4 || code == 10 || code == 11 || code == 104 ||
-             code == 110 || code == 111))
+            (code == 4 || code == 10 || code == 11 || code == 12 || code == 104 ||
+             code == 110 || code == 111 || code == 112))
         {
             *cmd_ptr = C_SET_COLOR;
             *numparams_ptr = 3;
@@ -343,6 +457,120 @@ static LONG consume_osc(Object *unit, UBYTE *str, LONG toparse,
 }
 
 
+/* DEC Special Graphics (VT100); matches the Alacritty/vte charset table.
+ * Translate character identities before rendering/retention, not font glyphs. */
+static ULONG con_charset_map(ULONG cp)
+{
+    static const UWORD graphics[32] = {
+        0x20, 0x25c6, 0x2592, 0x2409, 0x240c, 0x240d, 0x240a, 0xb0,
+        0xb1, 0x2424, 0x240b, 0x2518, 0x2510, 0x250c, 0x2514, 0x253c,
+        0x23ba, 0x23bb, 0x2500, 0x23bc, 0x23bd, 0x251c, 0x2524, 0x2534,
+        0x252c, 0x2502, 0x2264, 0x2265, 0x3c0, 0x2260, 0xa3, 0xb7
+    };
+    return cp >= 0x5f && cp <= 0x7e ? graphics[cp - 0x5f] : cp;
+}
+
+/* REP retains the parser's preceding codepoint, before charset mapping.
+ * Controls, saved cursors and screen swaps do not replace this history. */
+static VOID con_repeat_char(Object *unit, IPTR repetitions)
+{
+    struct intConUnit *icu = ICU(unit);
+    if (!icu->hasLastPrintable) return;
+    if (repetitions <= 0) repetitions = 1;
+    if (repetitions > 65535) repetitions = 65535;
+    ULONG cp = icu->lastPrintable;
+    if (icu->charsets & (1U << icu->activeCharset)) cp = con_charset_map(cp);
+    UBYTE glyph[4], output[256];
+    ULONG bytes = con_utf8_encode(glyph, cp), n;
+    for (n = 0; n < 64; n++) memcpy(output + n * bytes, glyph, bytes);
+    BOOL before = icu->renderUTF8;
+    icu->renderUTF8 = TRUE;
+    while (repetitions > 0)
+    {
+        ULONG count = repetitions > 64 ? 64 : repetitions;
+        IPTR mapped[2] = {(IPTR)output, count * bytes};
+        Console_DoCommand(unit, C_ASCII_STRING, 2, mapped);
+        repetitions -= count;
+    }
+    icu->renderUTF8 = before;
+}
+
+static VOID con_remember_text(Object *unit, BYTE command, IPTR *params)
+{
+    struct intConUnit *icu = ICU(unit);
+    if (command == C_ASCII)
+    {
+        icu->lastPrintable = (UBYTE)params[0];
+        icu->hasLastPrintable = TRUE;
+    }
+    else if (command == C_ASCII_STRING && params[1] > 0)
+    {
+        const UBYTE *p = (const UBYTE *)params[0];
+        LONG left = params[1];
+        if (!CON_IS_UTF8(unit) || p[left - 1] < 0x80)
+            icu->lastPrintable = p[left - 1];
+        else
+            while (left > 0) icu->lastPrintable = con_utf8_decode(&p, &left);
+        icu->hasLastPrintable = TRUE;
+    }
+}
+
+static VOID con_emit_command(Object *unit, BYTE command, UBYTE count, IPTR *params)
+{
+    struct intConUnit *icu = ICU(unit);
+    if (command == C_REPEAT_CHAR)
+    {
+        con_repeat_char(unit, params[0]);
+        return;
+    }
+    con_remember_text(unit, command, params);
+    if ((command != C_ASCII && command != C_ASCII_STRING) ||
+        !(icu->charsets & (1U << icu->activeCharset)))
+    {
+        Console_DoCommand(unit, command, count, params);
+        return;
+    }
+    UBYTE single = params[0], output[256];
+    const UBYTE *p = command == C_ASCII ? &single : (const UBYTE *)params[0];
+    LONG left = command == C_ASCII ? 1 : params[1];
+    BOOL utf8 = !!CON_IS_UTF8(unit);
+    while (left > 0)
+    {
+        ULONG used = 0;
+        while (left > 0 && used <= sizeof(output) - 4)
+        {
+            ULONG cp;
+            if (utf8) cp = con_utf8_decode(&p, &left);
+            else { cp = *p++; left--; }
+            used += con_utf8_encode(output + used, con_charset_map(cp));
+        }
+        IPTR mapped[2] = {(IPTR)output, used};
+        /* Native Latin-1 consoles keep their input policy. Only this internal
+         * rendering span is Unicode; input handlers never observe an encoding change. */
+        BOOL before = icu->renderUTF8;
+        icu->renderUTF8 = TRUE;
+        Console_DoCommand(unit, C_ASCII_STRING, 2, mapped);
+        icu->renderUTF8 = before;
+    }
+}
+
+static BOOL getcharset(BYTE *command, UBYTE **input, LONG length, Object *unit)
+{
+    UBYTE *p = *input;
+    if (length < 3 || p[0] != ESC || p[1] < '(' || p[1] > '+') return FALSE;
+    if (p[2] < 0x20 || p[2] > 0x7e)
+    {
+        *command = C_NIL; *input = p + 2;
+        return TRUE; /* Cancel designation; execute the following control. */
+    }
+    UBYTE bit = 1U << (p[1] - '(');
+    if (p[2] == '0') ICU(unit)->charsets |= bit;
+    else if (p[2] == 'B') ICU(unit)->charsets &= ~bit;
+    /* Unsupported designations are consumed without changing the set. */
+    *command = C_NIL; *input = p + 3;
+    return TRUE;
+}
+
 /* An escape sequence runs <CSI> params(0x30-0x3F) intermediates(0x20-0x2F)
    final(0x40-0x7E). It is unterminated while only parameter or intermediate
    bytes have arrived, so it must not be interpreted or printed yet. */
@@ -351,6 +579,9 @@ static BOOL csi_incomplete(const UBYTE *buf, LONG len)
     const UBYTE *p;
     LONG rem, i;
 
+    if (len == 2 && buf[0] == ESC &&
+        ((buf[1] >= '(' && buf[1] <= '+') || buf[1] == '#' || buf[1] == '%'))
+        return TRUE;
     if (len >= 1 && buf[0] == CSI)
     {
         p = buf + 1;
@@ -375,8 +606,8 @@ static BOOL csi_incomplete(const UBYTE *buf, LONG len)
 }
 
 
-ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
-    struct ConsoleBase *ConsoleDevice)
+ULONG con_parse_output(struct ConUnit *unit, STRPTR buf, ULONG towrite,
+    struct ConsoleBase *ConsoleDevice, LONG *error)
 {
     IPTR param_tab[MAX_COMMAND_PARAMS];
     struct intConUnit *icu = ICU(unit);
@@ -391,18 +622,30 @@ ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
 
     EnterFunc(bug("WriteToConsole(ioreq=%p)\n"));
 
+    *error = 0;
+    if (!towrite) return 0;
+    /* Parser spans use signed LONG lengths. Reject before reading the caller's
+     * buffer or changing any pending state, including on 64-bit hosts. */
+    if (towrite > 0x7fffffffUL - icu->pendingCSILen)
+    {
+        *error = IOERR_BADLENGTH;
+        return 0;
+    }
     if (icu->pendingCSILen > 0)
     {
         UWORD pl = icu->pendingCSILen;
-        icu->pendingCSILen = 0;
         allocbuf = AllocMem(pl + towrite, MEMF_ANY);
-        if (allocbuf)
+        if (!allocbuf)
         {
-            CopyMem(icu->pendingCSI, allocbuf, pl);
-            CopyMem(buf, allocbuf + pl, towrite);
-            buf = (STRPTR) allocbuf;
-            towrite += pl;
+            /* No bytes were consumed: keep the prefix for a caller retry. */
+            *error = IOERR_ABORTED;
+            return 0;
         }
+        CopyMem(icu->pendingCSI, allocbuf, pl);
+        if (towrite) CopyMem(buf, allocbuf + pl, towrite);
+        icu->pendingCSILen = 0;
+        buf = (STRPTR) allocbuf;
+        towrite += pl;
     }
 
     write_str = orig_write_str = (UBYTE *) buf;
@@ -428,7 +671,14 @@ ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
     if (CON_IS_UTF8(unit) && ICU(unit)->utf8StashLen > 0 && towrite > 0)
     {
         WORD need = utf8_seqlen(ICU(unit)->utf8Stash[0]);
-        WORD take = MIN(need - ICU(unit)->utf8StashLen, (WORD) towrite);
+        /* A CMD_WRITE can exceed signed-WORD range. Bound in the original
+         * unsigned length domain before copying into the four-byte stash. */
+        ULONG take = MIN((ULONG)(need - ICU(unit)->utf8StashLen), towrite);
+
+        ULONG valid = 0;
+        while (valid < take && (write_str[valid] & 0xc0) == 0x80) valid++;
+        BOOL interrupted = valid < take;
+        take = valid;
 
         memcpy(ICU(unit)->utf8Stash + ICU(unit)->utf8StashLen, write_str,
             take);
@@ -436,16 +686,21 @@ ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
         write_str += take;
         towrite -= take;
 
-        if (ICU(unit)->utf8StashLen == need)
+        if (ICU(unit)->utf8StashLen == need || interrupted)
         {
             IPTR stash_tab[2];
+            UBYTE replacement = '?';
 
-            stash_tab[0] = (IPTR) ICU(unit)->utf8Stash;
-            stash_tab[1] = need;
+            /* The existing decoder maps a truncated sequence to '?'. Emit
+             * that character directly, so immediate and retained rendering
+             * both take the ordinary ASCII path. Leave the interrupting byte
+             * with the parser rather than swallowing ESC, CR/LF or text. */
+            stash_tab[0] = interrupted ? (IPTR)&replacement : (IPTR)ICU(unit)->utf8Stash;
+            stash_tab[1] = interrupted ? 1 : ICU(unit)->utf8StashLen;
             ICU(unit)->utf8StashLen = 0;
 
             Console_UnRenderCursor((Object *) unit);
-            Console_DoCommand((Object *) unit, C_ASCII_STRING, 2, stash_tab);
+            con_emit_command((Object *) unit, C_ASCII_STRING, 2, stash_tab);
             Console_RenderCursor((Object *) unit);
         }
         else if (towrite == 0)
@@ -474,6 +729,7 @@ ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
 
     while (towrite > 0)
     {
+        if (con_sync_buffering(unit)) { accepted -= towrite; break; }
         if (csi_incomplete(write_str, towrite)
             && towrite <= (LONG) sizeof(icu->pendingCSI))
         {
@@ -489,7 +745,7 @@ ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
                 param_tab, (Object *) unit, ConsoleDevice))
             break;
 
-        Console_DoCommand((Object *) unit, command, numparams, param_tab);
+        con_emit_command((Object *) unit, command, numparams, param_tab);
 
         towrite = orig_towrite - (write_str - orig_write_str);
     } /* while (characters left to interpret) */
@@ -613,10 +869,10 @@ static UBYTE *cmd_names[NUM_CONSOLE_COMMANDS] = {
 
 static BOOL check_special(STRPTR string, LONG toparse, BOOL utf8)
 {
-    /* In UTF-8 mode the C1 bytes (CSI, INDEX, ...) are continuation/lead
-       bytes of multi-byte sequences - only C0 controls and ESC[ remain
-       control characters. */
-    if (utf8 && (*(UBYTE *) string >= 0x80))
+    /* Native con-handler emits standalone CSI even in a UTF-8 console.
+       con_text_span skips complete UTF-8 characters, so their continuation
+       bytes never reach this control-byte check. Other C1 bytes stay text. */
+    if (utf8 && (*(UBYTE *) string >= 0x80) && *(UBYTE *)string != CSI)
         return FALSE;
 
     return ((*string == CSI) ||
@@ -626,13 +882,230 @@ static BOOL check_special(STRPTR string, LONG toparse, BOOL utf8)
         (*string == BACKSPACE) ||
         (*string == HTAB) ||
         (*string == LINEFEED) ||
+        (*string == VTAB) ||
         (*string == FORMFEED) ||
         (*string == CARRIAGE_RETURN) ||
         (*string == SHIFT_OUT) ||
         (*string == SHIFT_IN) ||
         (*string == ESC) ||
         (*string == INDEX) ||
+        (*string == NEXT_LINE) ||
         (*string == H_TAB_SET) || (*string == REVERSE_INDEX));
+}
+
+/* Stop at controls only between UTF-8 characters. Preserve incomplete tails
+ * for the existing cross-write UTF-8 stash, including CSI-valued continuations. */
+static LONG con_text_span(UBYTE *text, LONG length, BOOL utf8)
+{
+    LONG used = 0;
+    while (used < length)
+    {
+        if (used && check_special((STRPTR)(text + used), length - used, utf8))
+            break;
+        WORD step = 1;
+        if (utf8)
+        {
+            WORD need = utf8_seqlen(text[used]);
+            while (step < need && used + step < length &&
+                (text[used + step] & 0xC0) == 0x80)
+                step++;
+        }
+        used += step;
+    }
+    return used;
+}
+
+static BOOL getkeypadmode(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    LONG toparse, Object *unit)
+{
+    UBYTE *p = *writestr_ptr;
+    if (toparse < 2 || p[0] != ESC || (p[1] != '=' && p[1] != '>'))
+        return FALSE;
+    if (p[1] == '=')
+        ICU(unit)->conFlags |= CF_APPLICATION_KEYPAD;
+    else
+        ICU(unit)->conFlags &= ~CF_APPLICATION_KEYPAD;
+    *cmd_ptr = C_NIL;
+    *writestr_ptr = p + 2;
+    return TRUE;
+}
+
+/* Seven-bit forms of the supported C1 controls, plus DECSC/DECRC.
+ * A lone ESC is buffered by the existing incomplete-sequence path. */
+static BOOL getshortescape(BYTE *cmd_ptr, UBYTE **writestr_ptr, LONG toparse)
+{
+    UBYTE *p = *writestr_ptr;
+    if (toparse < 2 || p[0] != ESC) return FALSE;
+    if (p[1] == '#')
+    {
+        if (toparse < 3) return FALSE;
+        *cmd_ptr = p[2] == '8' ? C_SCREEN_ALIGNMENT : C_NIL;
+        *writestr_ptr = p + (p[2] < 0x20 || p[2] > 0x7e ? 2 : 3);
+        return TRUE;
+    }
+    switch (p[1])
+    {
+    case 'D': *cmd_ptr = C_INDEX; break;
+    case 'E': *cmd_ptr = C_NEXT_LINE; break;
+    case 'H': *cmd_ptr = C_H_TAB_SET; break;
+    case 'M': *cmd_ptr = C_REVERSE_IDX; break;
+    case '7': *cmd_ptr = C_SAVE_CURSOR; break;
+    case '8': *cmd_ptr = C_RESTORE_CURSOR; break;
+    case 'c': *cmd_ptr = C_TERMINAL_RESET; break;
+    case 'Z': *cmd_ptr = C_PRIMARY_ATTRIBUTES; break;
+    case '\\': *cmd_ptr = C_NIL; break; /* ST outside a string */
+    default: return FALSE;
+    }
+    *writestr_ptr = p + 2;
+    return TRUE;
+}
+
+/* ANSI aliases are seven-bit only: native CSI u remains Set Line Length.
+ * Ignore parameters like the reference, but leave private/intermediate
+ * prefixes to other protocols (notably keyboard CSI ... u). */
+static BOOL getansisavedcursor(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse)
+{
+    UBYTE *p = *writestr_ptr;
+    LONG i;
+    if (toparse < 3 || p[0] != ESC || p[1] != '[') return FALSE;
+    for (i = 2; i < toparse; i++)
+    {
+        if ((p[i] >= '0' && p[i] <= '9') || p[i] == ';' || p[i] == ':')
+            continue;
+        if (p[i] != 's' && p[i] != 'u') return FALSE;
+        *cmd_ptr = p[i] == 's' ? C_SAVE_CURSOR : C_RESTORE_CURSOR;
+        *numparams_ptr = 0;
+        *writestr_ptr = p + i + 1;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+/* Window title and geometry extensions are seven-bit; preserve native CSI t. */
+static BOOL getwindowcommand(BYTE *command, UBYTE **input, UBYTE *count, LONG length)
+{
+    UBYTE *p = *input;
+    LONG i = 2;
+    ULONG selector = 0;
+    if (length < 3 || p[0] != ESC || p[1] != '[') return FALSE;
+    while (i < length && p[i] >= '0' && p[i] <= '9')
+    {
+        /* Saturate unknown selectors without letting them fall through to
+         * native CSI t (Set Page Length), including oversized numbers. */
+        if (selector < 24) selector = selector * 10 + p[i] - '0';
+        if (selector > 24) selector = 24;
+        i++;
+    }
+    /* Reference ignores the optional title selector (icon names unsupported). */
+    while (i < length && (p[i] == ';' || p[i] == ':' || (p[i] >= '0' && p[i] <= '9'))) i++;
+    if (i >= length || p[i] != 't') return FALSE;
+    *command = selector == 14 ? C_REPORT_PIXEL_GEOMETRY :
+        selector == 18 ? C_REPORT_CELL_GEOMETRY :
+        selector == 22 ? C_PUSH_TITLE : selector == 23 ? C_POP_TITLE : C_NIL;
+    *count = 0;
+    *input = p + i + 1;
+    return TRUE;
+}
+
+/* Colon subparameters form one SGR group, never separate rendition codes.
+ * Handle underline and indexed/RGB colors; ignore unsupported colon groups. */
+static BOOL getcolonsgr(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params, BOOL modern)
+{
+    const UBYTE *p = *input;
+    LONG end, start;
+    BOOL colon = FALSE, defaults = FALSE, overflow = FALSE;
+    UBYTE used = 0;
+    IPTR values[MAX_COMMAND_PARAMS];
+    for (end = 0; end < length && p[end] != 'm'; end++)
+    {
+        if (p[end] == ':') colon = TRUE;
+        else if (p[end] == ';')
+        {
+            if (!end || p[end - 1] == ';') defaults = TRUE;
+        }
+        else if (p[end] < '0' || p[end] > '9') return FALSE;
+    }
+    if (end == length) return FALSE;
+    if (end && p[end - 1] == ';') defaults = TRUE;
+    if (!colon && !(modern && defaults)) return FALSE;
+    for (start = 0; start <= end; )
+    {
+        LONG next = start, i = start;
+        ULONG value = 0;
+        while (next < end && p[next] != ';') next++;
+        while (i < next && p[i] != ':')
+        {
+            value = value * 10 + p[i++] - '0';
+            if (value > 65535) value = 65535;
+        }
+        if (i == next)
+        {
+            if (used < MAX_COMMAND_PARAMS) values[used++] = value;
+            else overflow = TRUE;
+        }
+        else if (value == 4)
+        {
+            ++i;
+            ULONG style = 0;
+            while (i < next && p[i] != ':')
+            {
+                style = style * 10 + p[i++] - '0';
+                if (style > 65535) style = 65535;
+            }
+            /* VTE defaults an empty subparameter to zero. Only exact
+             * two-part selectors have special meanings; other [4, ..]
+             * groups fall back to single underline. Negative internal tags
+             * carry extended styles without aliasing public numeric SGR. */
+            if (i != next || style > 5) style = 1;
+            if (used < MAX_COMMAND_PARAMS)
+                values[used++] = style > 2 ? -(IPTR)style : style == 0 ? 24 : style == 1 ? 4 : 21;
+            else overflow = TRUE;
+        }
+        else if (value == 38 || value == 48 || value == 58)
+        {
+            ULONG parts[5] = {0};
+            ULONG missing = 0;
+            LONG fields = 0;
+            while (i < next)
+            {
+                LONG begin = ++i;
+                ULONG part = 0;
+                while (i < next && p[i] != ':')
+                {
+                    part = part * 10 + p[i++] - '0';
+                    if (part > 65535) part = 65535;
+                }
+                if (fields < 5)
+                {
+                    parts[fields] = part;
+                    if (i == begin) missing |= 1UL << fields;
+                }
+                fields++;
+            }
+            BOOL indexed = fields == 2 && !missing && parts[0] == 5 && parts[1] <= 255;
+            LONG rgb = fields == 5 ? 2 : 1;
+            BOOL direct = (fields == 4 || fields == 5) && parts[0] == 2 &&
+                (fields == 4 ? !missing : !(missing & ~2UL) && parts[1] == 0) &&
+                parts[rgb] <= 255 && parts[rgb+1] <= 255 && parts[rgb+2] <= 255;
+            UBYTE needed = indexed ? 3 : direct ? 5 : 0;
+            if (used + needed > MAX_COMMAND_PARAMS) overflow = TRUE;
+            else if (needed)
+            {
+                values[used++] = value;
+                values[used++] = indexed ? 5 : 2;
+                if (indexed) values[used++] = parts[1];
+                else for (LONG c = 0; c < 3; c++) values[used++] = parts[rgb+c];
+            }
+        }
+        start = next + 1;
+    }
+    *input += end + 1;
+    *count = overflow ? 0 : used;
+    *command = !overflow && used ? C_SELECT_GRAPHIC_RENDITION : C_NIL;
+    if (!overflow) for (UBYTE n = 0; n < used; n++) params[n] = values[n];
+    return TRUE;
 }
 
 static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
@@ -647,6 +1120,13 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     BOOL found = FALSE, csi = FALSE;
 
     EnterFunc(bug("StringToCommand(toparse=%d)\n", toparse));
+
+    if (ICU(unit)->dcsDiscard)
+    {
+        *cmd_ptr = C_NIL;
+        *writestr_ptr += consume_dcs(unit, write_str, toparse);
+        ReturnBool("StringToCommand", TRUE);
+    }
 
     /* OSC string in progress (possibly split across CMD_WRITEs)? */
     if (ICU(unit)->oscState != OSC_IDLE)
@@ -670,12 +1150,29 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         }
     }
 
-    /* DECSC / DECRC: ESC 7 saves, ESC 8 restores the cursor */
-    if (*write_str == ESC && toparse >= 2 &&
-        (write_str[1] == '7' || write_str[1] == '8'))
+    if (getcharset(cmd_ptr, writestr_ptr, toparse, unit))
+        ReturnBool("StringToCommand", TRUE);
+
+    if (getkeypadmode(cmd_ptr, writestr_ptr, toparse, unit))
+        ReturnBool("StringToCommand", TRUE);
+
+    if (getshortescape(cmd_ptr, writestr_ptr, toparse))
+        ReturnBool("StringToCommand", TRUE);
+
+    if (getwindowcommand(cmd_ptr, writestr_ptr, numparams_ptr, toparse))
+        ReturnBool("StringToCommand", TRUE);
+
+    if (getansisavedcursor(cmd_ptr, writestr_ptr, numparams_ptr, toparse))
+        ReturnBool("StringToCommand", TRUE);
+
+    /* Unsupported control strings never become ordinary console text. */
+    LONG discard = discard_prefix(write_str, toparse, utf8);
+    if (discard)
     {
-        *cmd_ptr = (write_str[1] == '7') ? C_SAVE_CURSOR : C_RESTORE_CURSOR;
-        *writestr_ptr = write_str + 2;
+        LONG skip = discard;
+        ICU(unit)->dcsDiscard = TRUE;
+        *cmd_ptr = C_NIL;
+        *writestr_ptr += skip + consume_dcs(unit, write_str + skip, toparse - skip);
         ReturnBool("StringToCommand", TRUE);
     }
 
@@ -685,6 +1182,7 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     {
         LONG skip = (*write_str == ESC) ? 2 : 1;
 
+        con_osc_clipboard_reset(ICU(unit));
         ICU(unit)->oscState = OSC_COLLECT;
         ICU(unit)->oscLen = 0;
         write_str += skip;
@@ -694,8 +1192,8 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         ReturnBool("StringToCommand", TRUE);
     }
 
-    /* Look for <CSI> (the 0x9B byte is text in UTF-8 mode) */
-    if (!utf8 && *write_str == CSI)
+    /* Standalone native CSI is a control at this codepoint boundary. */
+    if (*write_str == CSI)
     {
         csi_str++;
         csi = TRUE;
@@ -714,6 +1212,36 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     if (csi)
     {
         D(bug("CSI found, getting command\n"));
+        ULONG keyboard = con_keyboard_csi(CU(unit), csi_str, csi_toparse, ConsoleDevice);
+        if (keyboard) {
+            *cmd_ptr = C_NIL;
+            *writestr_ptr = csi_str + keyboard;
+            ReturnBool("StringToCommand", TRUE);
+        }
+
+        if (!found)
+            found = getcolonsgr(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, p_tab, *write_str != CSI);
+
+        if (!found)
+            found = getmoderequest(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, unit, ConsoleDevice);
+
+        if (!found)
+            found = getstatusrequest(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, p_tab, *write_str == CSI);
+
+        if (!found)
+            found = getscrollregion(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, p_tab);
+
+        if (!found)
+            found = getabsolutecommand(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, p_tab);
+
+        if (!found)
+            found = getcursorstylecommand(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, p_tab);
 
         /* DEC private modes use a '?' parameter prefix, which the classic
            Amiga console grammar does not understand.  Parse them before the
@@ -722,6 +1250,10 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         if (!found)
             found = getdecprivatecommand(cmd_ptr, &csi_str, csi_toparse,
                 unit);
+
+        if (!found)
+            found = getansimodecommand(cmd_ptr, &csi_str, numparams_ptr,
+                csi_toparse, unit);
 
         /* Search for the longest commands first */
 
@@ -887,12 +1419,9 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         *numparams_ptr = 2;
         found = TRUE;
 
-        do
-        {
-            toparse--;
-            write_str++;
-        }
-        while (toparse && !check_special(write_str, toparse, utf8));
+        LONG span = con_text_span(write_str, toparse, utf8);
+        toparse -= span;
+        write_str += span;
 
         /* store the string length */
         p_tab[1] = (IPTR) (write_str - (UBYTE *) p_tab[0]);
@@ -940,6 +1469,227 @@ static BOOL string2command(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
 /************************
 ** getdecprivatecommand()
 ************************/
+
+/* Absolute positioning permits omitted fields (CSI ;6H and CSI 5;f).
+ * Keep that grammar separate from the legacy Amiga parameter extensions. */
+/* DSR accepts one numeric selector; DA1 accepts omitted/zero selector.
+ * Commit only a complete supported query. */
+static BOOL getstatusrequest(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params, BOOL native)
+{
+    UBYTE *p = *input;
+    /* Color-scheme query is private DSR, not the cursor-position report.
+       Commit only the complete selector; fragmented writes remain buffered. */
+    if (length > 0 && p[0] == '?')
+    {
+        LONG i = 1;
+        IPTR selector = 0;
+        while (i < length && p[i] >= '0' && p[i] <= '9')
+        {
+            if (selector > 996) return FALSE;
+            selector = selector * 10 + p[i++] - '0';
+        }
+        if (i < length && p[i] == 'n' && selector == 996)
+        {
+            params[0] = 996;
+            params[1] = native;
+            *count = 2;
+            *command = C_DEVICE_STATUS_REPORT;
+            *input = p + i + 1;
+            return TRUE;
+        }
+        return FALSE;
+    }
+    /* Native Amiga window reports overlap ANSI DECSCUSR. Keep the native
+       spelling available without stealing ESC-[ cursor-style commands. */
+    if (native && ((length >= 2 && p[0] == ' ' && p[1] == 'q') ||
+        (length >= 3 && p[0] == '0' && p[1] == ' ' && p[2] == 'q')))
+    {
+        *input = p + (p[0] == '0' ? 3 : 2);
+        *command = C_WINDOW_STATUS_REQUEST;
+        *count = 0;
+        return TRUE;
+    }
+    BOOL secondary = length > 0 && p[0] == '>';
+    LONG i = secondary ? 1 : 0;
+    IPTR selector = 0;
+    while (i < length && p[i] >= '0' && p[i] <= '9')
+    {
+        if (selector > 6) return FALSE;
+        selector = selector * 10 + p[i++] - '0';
+    }
+    if (i < length && p[i] == 'c' && selector == 0)
+    {
+        *command = secondary ? C_SECONDARY_ATTRIBUTES : C_PRIMARY_ATTRIBUTES;
+        *count = 0;
+        *input = p + i + 1;
+        return TRUE;
+    }
+    if (secondary || !i || i >= length || p[i] != 'n' ||
+        (selector != 5 && selector != 6)) return FALSE;
+    params[0] = selector;
+    params[1] = native;
+    *count = 2;
+    *command = C_DEVICE_STATUS_REPORT;
+    *input = p + i + 1;
+    return TRUE;
+}
+
+static BOOL getscrollregion(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params)
+{
+    UBYTE *p = *input;
+    IPTR values[2] = {0, 0};
+    LONG i = 0;
+    UBYTE field = 0;
+    while (i < length)
+    {
+        if (p[i] >= '0' && p[i] <= '9')
+            values[field] = MIN(values[field] * 10 + p[i] - '0', 65535);
+        else if (p[i] == ';')
+        {
+            if (++field > 1) return FALSE;
+        }
+        else break;
+        i++;
+    }
+    if (i == length || p[i] != 'r') return FALSE;
+    params[0] = values[0]; params[1] = values[1];
+    *count = 2; *command = C_SET_SCROLL_REGION; *input = p + i + 1;
+    return TRUE;
+}
+
+static BOOL getabsolutecommand(BYTE *command, UBYTE **input, UBYTE *count,
+    LONG length, IPTR *params)
+{
+    UBYTE *p = *input;
+    IPTR values[2] = {1, 1};
+    LONG i = 0;
+    UBYTE field = 0;
+    BOOL digits = FALSE;
+    BYTE cmd;
+    while (i < length)
+    {
+        if (p[i] >= '0' && p[i] <= '9')
+        {
+            if (!digits) values[field] = 0;
+            digits = TRUE;
+            values[field] = MIN(values[field] * 10 + p[i] - '0', 65535);
+        }
+        else if (p[i] == ';')
+        {
+            if (++field > 1) return FALSE;
+            digits = FALSE;
+        }
+        else break;
+        i++;
+    }
+    if (i == length) return FALSE;
+    switch (p[i])
+    {
+    case 'H': case 'f': cmd = C_CURSOR_POS; break;
+    case 'G': case '`': cmd = C_CURSOR_COLUMN; break;
+    case 'd': cmd = C_CURSOR_ROW; break;
+    default: return FALSE;
+    }
+    if (cmd != C_CURSOR_POS && field) return FALSE;
+    params[0] = values[0]; params[1] = values[1];
+    *count = cmd == C_CURSOR_POS ? 2 : 1;
+    *command = cmd; *input = p + i + 1;
+    return TRUE;
+}
+
+/* Validate the full ANSI mode list before applying any changes. Private
+ * Amiga/DEC sequences remain with their existing parsers. */
+static BOOL getansimodecommand(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, Object *unit)
+{
+    UBYTE *p = *writestr_ptr;
+    LONG end = 0, i;
+    ULONG mode = 0;
+    BOOL overflow = FALSE, set;
+    while (end < toparse && ((p[end] >= '0' && p[end] <= '9') || p[end] == ';')) end++;
+    if (end == 0 || end >= toparse || (p[end] != 'h' && p[end] != 'l')) return FALSE;
+    set = p[end] == 'h';
+    for (i = 0; i <= end; i++)
+    {
+        if (i < end && p[i] != ';')
+        {
+            if (mode > (65535UL - (p[i] - '0')) / 10) overflow = TRUE;
+            if (!overflow) mode = mode * 10 + p[i] - '0';
+        }
+        else
+        {
+            if (!overflow && mode == 4)
+            {
+                if (set) ICU(unit)->conFlags |= CF_INSERT_MODE;
+                else ICU(unit)->conFlags &= ~CF_INSERT_MODE;
+            }
+            else if (!overflow && mode == 20)
+                Console_DoCommand(unit, set ? C_SET_LF_MODE : C_RESET_LF_MODE, 0, NULL);
+            mode = 0; overflow = FALSE;
+        }
+    }
+    *writestr_ptr = p + end + 1; *cmd_ptr = C_NIL; *numparams_ptr = 0;
+    return TRUE;
+}
+
+/* DECRQM accepts a single decimal mode and a dollar intermediate. Validate
+ * the complete sequence before querying or emitting an unframed input reply. */
+static BOOL getmoderequest(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, Object *unit, struct ConsoleBase *ConsoleDevice)
+{
+    UBYTE *p = *writestr_ptr;
+    LONG i = 0;
+    ULONG mode = 0, state = 0;
+    BOOL privateMode = toparse > 0 && p[0] == '?', overflow = FALSE;
+    if (privateMode) i++;
+    while (i < toparse && p[i] >= '0' && p[i] <= '9')
+    {
+        if (mode > (65535UL - (p[i] - '0')) / 10) overflow = TRUE;
+        if (!overflow) mode = mode * 10 + p[i] - '0';
+        i++;
+    }
+    if (i + 1 >= toparse || p[i] != '$' || p[i + 1] != 'p') return FALSE;
+    *writestr_ptr = p + i + 2; *cmd_ptr = C_NIL; *numparams_ptr = 0;
+    if (!overflow)
+    {
+        IPTR params[3] = {privateMode, mode, (IPTR)&state};
+        char reply[32];
+        Console_DoCommand(unit, C_GET_MODE_STATE, 3, params);
+        LONG length = snprintf(reply, sizeof(reply), "\x1b[%s%lu;%lu$y",
+            privateMode ? "?" : "", (unsigned long)mode, (unsigned long)state);
+        con_inject(ConsoleDevice, CU(unit), (const UBYTE *)reply, length);
+    }
+    return TRUE;
+}
+
+/* DECSCUSR has a space intermediate; it must not be parsed as plain CSI q.
+ * Validate the entire sequence before changing any output state. */
+static BOOL getcursorstylecommand(BYTE *cmd_ptr, UBYTE **writestr_ptr,
+    UBYTE *numparams_ptr, LONG toparse, IPTR *params)
+{
+    UBYTE *p = *writestr_ptr;
+    LONG i = 0;
+    ULONG style = 0;
+    while (i < toparse && p[i] >= '0' && p[i] <= '9')
+    {
+        style = MIN(style * 10 + p[i] - '0', 7);
+        i++;
+    }
+    if (i + 1 >= toparse || p[i] != ' ' || p[i + 1] != 'q')
+        return FALSE;
+    *writestr_ptr = p + i + 2;
+    *cmd_ptr = C_NIL;
+    *numparams_ptr = 0;
+    if (style <= 6)
+    {
+        params[0] = style;
+        *numparams_ptr = 1;
+        *cmd_ptr = C_SET_CURSOR_STYLE;
+    }
+    return TRUE;
+}
 
 static BOOL getdecprivatecommand(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
     LONG toparse, Object *unit)
@@ -993,14 +1743,79 @@ static BOOL getdecprivatecommand(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         {
             switch (value)
             {
+            case 1:
+                if (set)
+                    ICU(unit)->conFlags |= CF_APPLICATION_CURSOR;
+                else
+                    ICU(unit)->conFlags &= ~CF_APPLICATION_CURSOR;
+                break;
+            case 3:
+                {
+                    /* DECCOLM follows the reference's reset side effects;
+                     * native window/font geometry remains unchanged. */
+                    IPTR region[2] = {0, 0}, erase = 2;
+                    Console_DoCommand(unit, C_SET_SCROLL_REGION, 2, region);
+                    Console_DoCommand(unit, C_ERASE_IN_DISPLAY, 1, &erase);
+                }
+                break;
+            case 6:
+                {
+                    IPTR origin = set;
+                    Console_DoCommand(unit, C_SET_ORIGIN_MODE, 1, &origin);
+                }
+                break;
+            case 7:
+                Console_DoCommand(unit, set ? C_SET_AUTOWRAP_MODE :
+                    C_RESET_AUTOWRAP_MODE, 0, NULL);
+                break;
+            case 12:
+                {
+                    IPTR blink = set;
+                    Console_DoCommand(unit, C_SET_CURSOR_BLINK, 1, &blink);
+                }
+                break;
             case 25:
                 *cmd_ptr = set ? C_CURSOR_VISIBLE : C_CURSOR_INVISIBLE;
+                break;
+            case 1049:
+                {
+                    IPTR mode = set;
+                    Console_DoCommand(unit, C_ALTERNATE_SCREEN, 1, &mode);
+                }
+                break;
+            case 2026:
+                {
+                    IPTR mode = set;
+                    Console_DoCommand(unit, C_SET_SYNC_OUTPUT, 1, &mode);
+                }
                 break;
             case 2004:
                 if (set)
                     ICU(unit)->conFlags |= CF_BRACKETED_PASTE;
                 else
                     ICU(unit)->conFlags &= ~CF_BRACKETED_PASTE;
+                break;
+            case 1000:
+            case 1002:
+            case 1003:
+                if ((set && ICU(unit)->mouseMode != value) ||
+                    (!set && ICU(unit)->mouseMode == value))
+                    ICU(unit)->mouseReportedButtons = 0;
+                if (set) ICU(unit)->mouseMode = value;
+                else if (ICU(unit)->mouseMode == value) ICU(unit)->mouseMode = 0;
+                ICU(unit)->mouseLastValid = FALSE;
+                break;
+            case 1005:
+                ICU(unit)->mouseUTF8 = set;
+                if (set) ICU(unit)->mouseSGR = FALSE;
+                break;
+            case 1006:
+                ICU(unit)->mouseSGR = set;
+                if (set) ICU(unit)->mouseUTF8 = FALSE;
+                break;
+            case 1007:
+                if (set) ICU(unit)->conFlags |= CF_ALTERNATE_SCROLL;
+                else ICU(unit)->conFlags &= ~CF_ALTERNATE_SCROLL;
                 break;
             case 1004:
                 if (set)
@@ -1067,7 +1882,7 @@ static const struct Command
     {-1,                         },                      /* 0x55 U */
     {-1,                         },                      /* 0x56 V */
     {C_CURSOR_TAB_CTRL,          1},                     /* 0x57 W */
-    {-1,                         },                      /* 0x58 X */
+    {C_ERASE_CHAR,               1},                     /* 0x58 X */
     {-1,                         },                      /* 0x59 Y */
     {C_CURSOR_BACKTAB,           1},                     /* 0x5A Z */
     {-1,                         },                      /* 0x5B [ */
@@ -1075,14 +1890,14 @@ static const struct Command
     {-1,                         },                      /* 0x5D ] */
     {-1,                         },                      /* 0x5E ^ */
     {-1,                         },                      /* 0x5F _ */
-    {-1,                         },                      /* 0x60 ` */
-    {-1,                         },                      /* 0x61 a */
-    {-1,                         },                      /* 0x62 b */
+    {C_CURSOR_COLUMN,            1},                     /* 0x60 ` */
+    {C_CURSOR_FORWARD,           1},                     /* 0x61 a */
+    {C_REPEAT_CHAR,              1},                     /* 0x62 b */
     {-1,                         },                      /* 0x63 c */
-    {-1,                         },                      /* 0x64 d */
-    {-1,                         },                      /* 0x65 e */
-    {-1,                         },                      /* 0x66 f */
-    {-1,                         },                      /* 0x67 g */
+    {C_CURSOR_ROW,               1},                     /* 0x64 d */
+    {C_CURSOR_DOWN,              1},                     /* 0x65 e */
+    {C_CURSOR_POS,               2},                     /* 0x66 f */
+    {C_CLEAR_TABS,               1},                     /* 0x67 g */
     {-1,                         },                      /* 0x68 h */
     {-1,                         },                      /* 0x69 i */
     {-1,                         },                      /* 0x6A j */
@@ -1189,7 +2004,15 @@ static BOOL getparamcommand(BYTE *cmd_ptr, UBYTE ** writestr_ptr,
         case 0x53:
         case 0x54:
         case 0x57:
+        case 0x58:
         case 0x5A:
+        case 0x60:
+        case 0x61:
+        case 0x62:
+        case 0x64:
+        case 0x65:
+        case 0x66:
+        case 0x67:
         case 0x6D:
         case 0x74:
         case 0x75:

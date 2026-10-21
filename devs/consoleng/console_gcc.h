@@ -12,6 +12,7 @@
 #include <exec/semaphores.h>
 #include <dos/dos.h>
 #include <devices/conunit.h>
+#include "include/consoleng.h"
 #include <intuition/classes.h>
 
 #include <proto/alib.h>
@@ -79,6 +80,11 @@ struct ConsoleBase;
 
 #define ICU(x) ((struct intConUnit *)x)
 
+/* Invalid margins after geometry changes fall back to the full screen. */
+#define CON_SCROLL_VALID(o) (ICU(o)->scrollBottom > ICU(o)->scrollTop + 1 && ICU(o)->scrollTop >= 0 && ICU(o)->scrollTop < CHAR_YMAX(o))
+#define CON_SCROLL_TOP(o) (CON_SCROLL_VALID(o) ? ICU(o)->scrollTop : 0)
+#define CON_SCROLL_BOTTOM(o) (CON_SCROLL_VALID(o) ? MIN(ICU(o)->scrollBottom - 1, CHAR_YMAX(o)) : CHAR_YMAX(o))
+
 #define WINDOW(o)	CU(o)->cu_Window
 #define RASTPORT(o)	WINDOW(o)->RPort
 
@@ -93,6 +99,9 @@ struct ConsoleBase;
 #define CON_TXTFLAGS_UNDERLINED FSF_UNDERLINED
 #define CON_TXTFLAGS_REVERSED 0x08
 #define CON_TXTFLAGS_CONCEALED 0x10
+#define CON_TXTFLAGS_DOUBLEUNDERLINED 0x20
+#define CON_TXTFLAGS_STRUCK 0x40
+#define CON_TXTFLAGS_FAINT 0x80
 
 /* Console write commands */
 enum
@@ -164,7 +173,7 @@ enum
 
     C_SET_FONT,                 /* OSC 50: params = name ptr, ysize */
     C_SET_TITLE,                /* OSC 0/2: params = title ptr */
-    C_SET_COLOR,                /* OSC 4/10/11/104/110/111: params = code,
+    C_SET_COLOR,                /* OSC 4/10/11/12/104/110/111/112: params = code,
                                    spec ptr, ST-terminated */
 
     C_SET_OBSCURED,             /* tab hidden: state only, no rendering */
@@ -172,6 +181,65 @@ enum
 
     C_SAVE_CURSOR,              /* ESC 7 (DECSC): position and attributes */
     C_RESTORE_CURSOR,           /* ESC 8 (DECRC) */
+
+    C_ERASE_CHAR,              /* CSI Ps X: erase without moving cursor */
+
+    C_ALTERNATE_SCREEN,       /* DEC 1049: private screen and saved cursor */
+
+    C_SET_CURSOR_STYLE,      /* CSI Ps SP q: shape and requested blink mode */
+
+    C_SET_CURSOR_BLINK,      /* DEC12: toggle blink while retaining shape */
+
+    C_GET_CURSOR_PREFS,
+    C_SET_CURSOR_PREFS,
+
+    C_GET_HISTORY_PREFS,
+    C_SET_HISTORY_PREFS,
+    C_RESET_FONT,
+    C_GET_COLOR_PREFS,
+    C_SET_COLOR_PREFS,
+
+    C_GET_MODE_STATE,       /* internal query: private, mode, output state */
+
+    C_CURSOR_ROW,          /* CSI Ps d: absolute row, retaining column */
+
+    C_CLEAR_TABS,          /* CSI Ps g: current/all horizontal tab stops */
+
+    C_GET_EMOJI_PREFS,
+    C_SET_EMOJI_PREFS,
+
+    C_SET_SCROLL_REGION,   /* DECSTBM; internal command, no public vector */
+    C_SET_ORIGIN_MODE,     /* DECOM; internal dispatch */
+
+    C_TERMINAL_RESET,      /* RIS; internal dispatch, public ABI unchanged */
+
+    C_REPEAT_CHAR,        /* REP; internal dispatch */
+
+    C_SCREEN_ALIGNMENT,   /* DECALN; internal dispatch */
+
+    C_PRIMARY_ATTRIBUTES, /* DA1 / DECID; internal dispatch */
+
+    C_SECONDARY_ATTRIBUTES, /* DA2; internal dispatch */
+
+    C_PUSH_TITLE, C_POP_TITLE, C_CLEAR_TITLE_STACK, /* internal dispatch */
+
+    C_REPORT_CELL_GEOMETRY, C_REPORT_PIXEL_GEOMETRY, /* internal dispatch */
+
+    C_SET_HYPERLINK,       /* OSC8; private metadata, no public vector */
+
+    C_SET_CURSOR_SHAPE,    /* OSC50 CursorShape, preserving blink */
+
+    C_GET_BELL_PREFS, C_SET_BELL_PREFS,
+
+    C_SET_OSC_CLIPBOARD, /* OSC52 copy-only; private dispatch */
+
+    C_GET_CLIPBOARD_PREFS, C_SET_CLIPBOARD_PREFS,
+
+    C_GET_CURSOR_COLOR_PREFS, C_SET_CURSOR_COLOR_PREFS,
+
+    C_SET_SYNC_OUTPUT,
+
+    C_ZOOM_FONT, /* private keyboard action; appended dispatch value */
 
     NUM_CONSOLE_COMMANDS
 };
@@ -193,6 +261,7 @@ struct intPasteData
     struct intConUnit *unit;
     STRPTR pasteBuffer;
     ULONG pasteBufferSize;
+    ULONG pasteAllocationSize;
 };
 
 /* Pen map: 0-7 = ANSI colors (SGR 30-37/40-47), 8 = default background,
@@ -207,6 +276,9 @@ struct intPasteData
 #define CONPEN_XTERM(n)    (0x100UL + (n))
 #define CONPEN_ISXTERM(v)  ((v) >= 0x100UL && (v) <= 0x1FFUL)
 #define CONPEN_XTERMIDX(v) ((v) - 0x100UL)
+#define CONPEN_BRIGHT(n) (0x200UL + (n))
+#define CONPEN_ISBRIGHT(v) ((v) >= 0x200UL && (v) <= 0x207UL)
+#define CONPEN_BRIGHTIDX(v) ((v) - 0x200UL)
 #define CONPEN_RGB(r,g,b)  (0x01000000UL | ((ULONG)(r) << 16) | \
                             ((ULONG)(g) << 8) | (ULONG)(b))
 #define CONPEN_ISRGB(v)    ((v) >= 0x01000000UL)
@@ -217,6 +289,15 @@ struct intConUnit
 {
     struct ConUnit unit;
     ULONG conFlags;
+    BOOL emojiDisabled;
+    BOOL bellDisabled;
+    BOOL oscCopyDisabled; /* private policy bits: 1 disables copy, 2 permits read */
+    WORD scrollTop, scrollBottom; /* zero-based top, exclusive bottom; 0 = full screen */
+    UQUAD inputGeneration; /* immutable while published; rejects stale events */
+    UWORD mouseMode;
+    BOOL mouseSGR, mouseLastValid;
+    BOOL mouseUTF8;
+    LONG mouseLastX, mouseLastY;
 
     /* Incomplete UTF-8 sequence carried across CMD_WRITEs (CF_UTF8 mode) */
     UBYTE utf8Stash[4];
@@ -225,19 +306,32 @@ struct intConUnit
 #define CON_TITLE_SIZE 64
     /* Tab/window title set via OSC 0/2 (xterm convention) */
     UBYTE unitTitle[CON_TITLE_SIZE];
+    UBYTE displayTitle[CON_TITLE_SIZE]; /* stable while hidden title changes */
+    struct ConsoleTitleEntry *titleStack;
+    UWORD titleDepth;
 
     /* OSC (ESC ]) string accumulation - OSC 50 = live font switch */
-#define CON_OSCBUF_SIZE 256
+#define CON_OSCBUF_SIZE 2048
 #define OSC_IDLE     0
 #define OSC_COLLECT  1
 #define OSC_OVERFLOW 2
 #define OSC_GOT_ESC  3          /* awaiting '\' of the ST terminator */
+#define OSC_OVERFLOW_ESC 4      /* overflow must survive the ST introducer */
     UBYTE oscBuf[CON_OSCBUF_SIZE];
-    UBYTE oscLen;
+    UWORD oscLen;
     UBYTE oscState;
+    struct ConsolengSync *sync;
+    struct ConsolengKeyboard *keyboard;
+    BOOL keyboardAlternate;
+    UBYTE *oscClipboard;
+    ULONG oscClipboardLength, oscClipboardCapacity;
+    BOOL oscClipboardInvalid;
+    UBYTE dcsDiscard; /* DCS/SOS/PM/APC payload, no allocation */
 
     /* Font installed via OSC 50 (owned by the unit, closed at dispose) */
     struct TextFont *setFont;
+    BOOL fontSetOK;
+    struct ConsolengFontWindow *fontWindow; /* shared borrowed baseline */
 
     UWORD pens[CONUNIT_PEN_MAX];
 
@@ -260,11 +354,44 @@ struct intConUnit
     UWORD pendingCSILen;
 
     /* Cursor and rendition saved by ESC 7, restored by ESC 8 */
+    ULONG fgColor, bgColor, savedFgColor, savedBgColor;
     WORD savedX, savedY;
     BYTE savedFgPen, savedBgPen;
     UBYTE savedTxFlags;
+    ULONG underlineColor, savedUnderlineColor; /* color key + 1; zero follows text */
+    UBYTE underlineStyle, savedUnderlineStyle; /* private: 0=normal,1=curly,2=dotted,3=dashed */
     BOOL savedCursor;
+    BOOL savedWrapPending;
+    BOOL savedOrigin;
+    UBYTE charsets, savedCharsets; /* bit n: G0..G3 uses DEC special graphics */
+    ULONG lastPrintable;
+    BOOL hasLastPrintable;
+    BOOL renderUTF8;              /* internal output span, never input policy */
+    UBYTE activeCharset;          /* SI=G0, SO=G1; independent of saved cursor */
+    ULONG extendedPaletteRevision; /* private OSC palette repaint generation */
+    struct ConsolengBindingPrefs bindings;
+    UBYTE bindingSwallowed[16];
+    UBYTE bindingHeldAction[128]; /* original action, one per native key */
+    struct ConsolengFontPrefs fontZoomBase; /* appended private zoom snapshot */
+    BOOL fontZoomActive, fontZoomBorrowed;
+    ULONG wheelLines; /* appended private per-unit wheel distance */
+    UBYTE mouseReportedButtons; /* presses successfully delivered to the application */
+    struct ConsolengSemanticPrefs semanticPrefs; /* navigation snapshots this policy */
 };
+
+/* Dynamic slot identity, distinct from its possibly shared physical pen. */
+#define CON_COLOR_ROLE(n) ((n)==CONUNIT_PEN_DEFFG?1:((n)==CONUNIT_PEN_DEFBG?2:((n)<8?3+(n):(CONPEN_ISXTERM(n)&&CONPEN_XTERMIDX(n)<16?11+CONPEN_XTERMIDX(n):(CONPEN_ISBRIGHT(n)?27+CONPEN_BRIGHTIDX(n):0)))))
+/* Keep RGB values, not cache pen numbers, in retained cells. Low role byte
+ * 0x80 identifies truecolor; 0x81 carries an extended palette key in the same
+ * payload. Existing default/ANSI role encodings stay unchanged. */
+#define CON_RETAINED_ROLE(n) (CONPEN_ISRGB(n) ? 0x80 : (CONPEN_ISXTERM(n) && CONPEN_XTERMIDX(n)>=16 ? 0x81 : CON_COLOR_ROLE(n)))
+#define CON_RETAINED_VALUE(n) ((CONPEN_ISRGB(n) || (CONPEN_ISXTERM(n) && CONPEN_XTERMIDX(n)>=16)) ? ((n) & 0xffffff) : 0)
+#define CHARMAP_ROLES(o) (((UQUAD)CON_RETAINED_ROLE(ICU(o)->fgColor)<<8) | \
+    CON_RETAINED_ROLE(ICU(o)->bgColor) | \
+    ((UQUAD)CON_RETAINED_VALUE(ICU(o)->fgColor)<<16) | \
+    ((UQUAD)CON_RETAINED_VALUE(ICU(o)->bgColor)<<40) | \
+    ((UQUAD)(ICU(o)->underlineStyle & 1)<<6) | \
+    ((UQUAD)(ICU(o)->underlineStyle & 2)<<13))
 
 /* The conFlags */
 #define CF_DELAYEDDISPOSE	(1L << 0)
@@ -275,9 +402,11 @@ struct intConUnit
    suppressed, input is not routed here. Cleared via CSI >9l which
    also triggers a full refresh from the cell store. */
 #define CF_OBSCURED		(1L << 3)
-/* DEC private modes negotiated by modern terminal clients.  KCON can use
-   these to frame pasted input and report focus/theme changes; classic CON
-   remains unchanged until a client explicitly enables a mode. */
+/* DEC private modes negotiated by modern terminal clients. Focus reports
+   are emitted by the device from native activation events; handlers must
+   not duplicate them. Clipboard producers own paste framing; generic replies
+   stay unframed. Theme notifications still need integration. Classic CON
+   is unchanged until mode negotiation. */
 #define CF_BRACKETED_PASTE	(1L << 4)
 #define CF_FOCUS_REPORTING	(1L << 5)
 #define CF_COLOR_SCHEME_NOTIFY	(1L << 6)
@@ -285,10 +414,18 @@ struct intConUnit
    enabled.  VT terminals defer the actual wrap until the next printable
    character; cursor/control commands cancel the pending wrap. */
 #define CF_WRAP_PENDING		(1L << 7)
+/* DECCKM: application cursor keys use SS3 instead of CSI. */
+#define CF_APPLICATION_CURSOR   (1L << 8)
+/* DECKPAM/DECKPNM state, available to keypad bindings. */
+#define CF_APPLICATION_KEYPAD   (1L << 9)
+#define CF_INSERT_MODE          (1L << 10)
+#define CF_ORIGIN_MODE          (1L << 11)
+#define CF_ALTERNATE_SCROLL     (1L << 12)
 
 #define CON_IS_OBSCURED(o) (ICU(o)->conFlags & CF_OBSCURED)
 
 #define CON_IS_UTF8(o) (ICU(o)->conFlags & CF_UTF8)
+#define CON_TEXT_IS_UTF8(o) (CON_IS_UTF8(o) || ICU(o)->renderUTF8)
 
 #if 0
 /* Determining whether linefeed (LF==LF+CR) mode is on */
@@ -300,8 +437,10 @@ struct cdihMessage
     struct Message msg;
     /* The unit that the user input should go to */
     Object *unit;
+    UQUAD unitGeneration;
 
     struct InputEvent ie;
+    LONG mouseX, mouseY; /* Intuition position at event receipt */
 };
 
 /* Data passed to the console device input handler */
@@ -336,8 +475,19 @@ struct Task *createConsoleTask(APTR taskparams,
     struct ConsoleBase *ConsoleDevice);
 
 /* Prototypes */
+VOID con_keyboard_dispose(struct ConUnit *unit);
+VOID con_keyboard_switch(struct ConUnit *unit, BOOL alternate);
+ULONG con_keyboard_csi(struct ConUnit *unit, const UBYTE *s, ULONG n, struct ConsoleBase *base);
+LONG con_keyboard_event(struct ConUnit *unit, const struct InputEvent *event, UBYTE *out, struct ConsoleBase *base);
+BOOL con_sync_active(struct ConUnit *unit);
+BOOL con_sync_buffering(struct ConUnit *unit);
+VOID con_sync_set(struct ConUnit *unit, struct ConsoleBase *base, BOOL enabled);
+VOID con_sync_dispose(struct ConUnit *unit);
+VOID con_sync_poll(struct ConsoleBase *base);
+ULONG con_parse_output(struct ConUnit *unit, STRPTR buf, ULONG length,
+    struct ConsoleBase *base, LONG *error);
 ULONG writeToConsole(struct ConUnit *unit, STRPTR buf, ULONG towrite,
-    struct ConsoleBase *ConsoleDevice);
+    struct ConsoleBase *ConsoleDevice, LONG *error);
 
 Class *makeConsoleClass(struct ConsoleBase *ConsoleDevice);
 Class *makeStdConClass(struct ConsoleBase *ConsoleDevice);
@@ -345,6 +495,23 @@ Class *makeCharMapConClass(struct ConsoleBase *ConsoleDevice);
 Class *makeSnipMapConClass(struct ConsoleBase *ConsoleDevice);
 
 VOID con_inject(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
+    const UBYTE *data, LONG size);
+LONG con_copy_clipboard_request(struct ConsoleBase *ConsoleDevice,
+    const UBYTE *bytes, ULONG length);
+VOID con_copy_clipboard_poll(VOID);
+VOID con_osc_clipboard_reset(struct intConUnit *unit);
+VOID con_osc_clipboard_byte(struct intConUnit *unit, UBYTE byte);
+VOID con_osc_clipboard_apply(struct ConsoleBase *base, struct intConUnit *unit);
+BOOL con_osc_clipboard_read(struct ConsoleBase *base, struct intConUnit *unit, BOOL st);
+BOOL con_osc_clipboard_utf8(const UBYTE *bytes, ULONG length);
+BOOL con_osc_read_request(struct ConsoleBase *base, Object *unit, UBYTE target, BOOL st);
+VOID con_osc_read_cancel(Object *unit);
+VOID con_osc_read_poll(struct ConsoleBase *base,
+    BOOL (*valid_unit)(Object *, UQUAD, struct ConsoleBase *));
+BOOL con_query_clipboard_request(struct ConsoleBase *ConsoleDevice, Object *unit, UQUAD revision);
+VOID con_query_clipboard_poll(struct ConsoleBase *ConsoleDevice,
+    BOOL (*valid_unit)(Object *, UQUAD, struct ConsoleBase *));
+VOID con_inject_paste(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
     const UBYTE *data, LONG size);
 
 VOID printstring(STRPTR string, ULONG len,
@@ -363,13 +530,34 @@ ULONG con_utf8_cellcount(const UBYTE *s, LONG len);
 VOID setabpen(struct Library *GfxBase, struct RastPort *rp, UBYTE tflags,
     UBYTE FgPen, UBYTE BgPen);
 
+/* The caller keeps its original window font alive while using the window.
+ * All units borrow that same baseline, never a sibling's OSC-owned font. */
+struct ConsolengFontWindow
+{
+    struct MinNode node;
+    struct Window *window;
+    struct TextFont *original;
+    ULONG users;
+};
+
 struct ConsoleBase
 {
     struct Device device;
 
+    struct MinList fontWindows;
+    struct SignalSemaphore fontWindowLock;
     struct MinList unitList;
     struct SignalSemaphore unitListLock;
+    UQUAD nextInputGeneration; /* assigned under unitListLock */
     struct SignalSemaphore consoleTaskLock;
+    struct ConsolengEmojiPrefs emojiDefaults;
+    struct ConsolengBellPrefs bellDefaults;
+    struct ConsolengClipboardPrefs clipboardDefaults;
+    struct ConsolengColorPrefs colorDefaults;
+    struct ConsolengFontPrefs fontDefaults;
+    struct ConsolengHistoryPrefs historyDefaults; /* guarded by unitListLock */
+    struct ConsolengCursorPrefs cursorDefaults; /* guarded by unitListLock */
+    struct ConsolengCursorColorPrefs cursorColorDefaults;
 
     /* Unicode glyph rendering above Latin-1 (consolengglyph.c). This device
        opens its OWN outline engine for the font in use, because diskfont
@@ -387,6 +575,13 @@ struct ConsoleBase
     ULONG               glyphMaskSize;
     BOOL                glyphFailed;        /* this font has no engine */
     LONG                glyphWhy;           /* CONSOLENG_GLYPH_* reason */
+    struct Library     *emojiEngineBase;
+    struct GlyphEngine *emojiEngine;
+    struct Library     *emojiCyberBase;
+    BOOL                emojiFailed;        /* retry after font binding reset */
+    struct Library     *cjkEngineBase;
+    struct GlyphEngine *cjkEngine;
+    BOOL                cjkFailed;
 
     struct Interrupt *inputHandler;
     /* Second input handler, BELOW intuition (priority < 50). Intuition
@@ -436,6 +631,9 @@ struct ConsoleBase
     struct Library *cb_IntuitionBase;
     struct Library *cb_KeymapBase;
     struct Library *cb_UtilityBase;
+    struct ConsolengBindingPrefs bindingDefaults;
+    ULONG wheelLinesDefault; /* guarded by unitListLock */
+    struct ConsolengSemanticPrefs semanticDefaults; /* guarded by unitListLock */
 };
 
 /* One self-opened window, tied to the unit it was opened for.  font is the
@@ -468,19 +666,28 @@ struct ConsolengOwnWin
  * scope exactly as the Text() macro does under __GRAPHICS_NOLIBBASE__. */
 /* GfxBase is a struct Library * throughout this device (see setabpen above),
  * not a struct GfxBase *. */
+UBYTE ConsoleNGFaintPen(Object *o, struct Library *GfxBase, UBYTE flags,
+    UBYTE foreground, ULONG key);
+
+/* Private retained role bits 6 and 14 carry underline style; color role
+ * identities use 0..34,0x80,0x81 and must mask off bit6 when decoded. */
+void ConsoleNGColorUnderline(Object *o, struct Library *GfxBase, struct RastPort *rp,
+    UBYTE flags, LONG x, LONG y, LONG width, LONG height, UBYTE style, ULONG color);
+void ConsoleNGStyledUnderline(struct Library *GfxBase, struct RastPort *rp,
+    UBYTE flags, LONG x, LONG y, LONG width, LONG height, UBYTE fg, UBYTE bg, UBYTE style);
+void ConsoleNGStrike(struct Library *GfxBase, struct RastPort *rp,
+    UBYTE flags, LONG x, LONG y, LONG width, LONG height, UBYTE fg, UBYTE bg);
+
 void ConsoleNGTextUTF8(struct Library *GfxBase,
                        struct ConsoleBase *ConsoleDevice,
                        struct RastPort *rp,
-                       CONST_STRPTR string, ULONG byteLen);
+                       CONST_STRPTR string, ULONG byteLen, BOOL emoji);
 
 /* consolengglyph.c: this device's own Unicode glyph path above Latin-1.
  *
- * ConsolengGlyphDraw returns WHY it failed, not just that it did. A
- * disk-loaded device cannot call kprintf() (that needs the kernel-only
- * _arosdebuglock - see consolengglyph.c), so the only diagnostic channel
- * available is what gets drawn: consolengtext.c renders the reason code as a
- * digit instead of '?'. Ugly on purpose, and only visible where a glyph was
- * impossible anyway. */
+ * ConsolengGlyphDraw retains detailed failure results for internal callers and
+ * diagnostic probes. Normal text output uses a cell-bounded missing-glyph box
+ * rather than exposing those numeric/letter codes as apparent document text. */
 #define CONSOLENG_GLYPH_OK             0
 #define CONSOLENG_GLYPH_NOFONT         1   /* no rastport font / no name */
 #define CONSOLENG_GLYPH_NOOTAG         2   /* no .otag: bitmap font */
@@ -506,9 +713,32 @@ void ConsoleNGTextUTF8(struct Library *GfxBase,
 
 LONG ConsolengGlyphDraw(struct Library *GfxBase,
                         struct ConsoleBase *ConsoleDevice,
-                        struct RastPort *rp, ULONG cp, LONG x, LONG base_y);
+                        struct RastPort *rp, ULONG cp, LONG x, LONG base_y, BOOL emoji);
 void ConsolengGlyphUnbind(struct ConsoleBase *ConsoleDevice);
+void ConsolengCloseFont(struct ConsoleBase *device, struct TextFont *font);
 #define TextUTF8(rp, string, byteLen) \
-    ConsoleNGTextUTF8(GfxBase, ConsoleDevice, (rp), (string), (byteLen))
+    ConsoleNGTextUTF8(GfxBase, ConsoleDevice, (rp), (string), (byteLen), !ICU(o)->emojiDisabled)
+
+struct charmap_line;
+BOOL con_url_run(struct charmap_line *line, ULONG column, ULONG *end);
+BOOL con_url_in_row(struct charmap_line *line);
+BOOL con_url_at(struct charmap_line *line, ULONG column, UBYTE *url, ULONG capacity);
+BOOL con_open_url(const UBYTE *url);
+ULONG con_mouse_encode(BOOL sgr, BOOL utf8, ULONG button, BOOL release, LONG x, LONG y,
+    UBYTE *out, ULONG capacity);
+
+
+/* Native logical-key shortcut policy, serialized by consoleTaskLock. */
+BOOL con_bindings_valid(const struct ConsolengBindingPrefs *p);
+VOID con_bindings_defaults(struct ConsolengBindingPrefs *p);
+ULONG con_binding_action(const struct ConsolengBindingPrefs *p,
+    const struct InputEvent *event, struct ConsoleBase *ConsoleDevice);
+ULONG con_binding_action_in_context(const struct ConsolengBindingPrefs *p,
+    const struct InputEvent *event, struct ConsoleBase *ConsoleDevice,ULONG context);
+ULONG con_binding_action_in_mode(const struct ConsolengBindingPrefs *p,
+    const struct InputEvent *event, struct ConsoleBase *ConsoleDevice,BOOL navigating);
+BOOL con_binding_release(UBYTE *held, const struct InputEvent *event);
+VOID con_binding_hold(UBYTE *held, const struct InputEvent *event);
+BOOL con_binding_repeat(ULONG original, ULONG current, const struct InputEvent *event);
 
 #endif /* CONSOLE_GCC_H */

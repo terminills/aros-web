@@ -22,7 +22,7 @@ latest upstream releases.
 | `libs/cef` | Public AROS CEF interface and browser integration |
 | `libs/electron` | Electron-compatible API bridge, window/context lifecycle and native desktop integration |
 | `tools/ElectronShell` | Application launcher and resident-engine application registration |
-| `devs/consoleng` | Console NG terminal device used by command-line applications |
+| [`devs/consoleng`](devs/consoleng/README.md) | Console NG terminal device, native preferences, search/navigation, Unicode and clipboard/input integration |
 | `tools/dosbash` | AmigaDOS shell adapter for callers expecting a bash-like entry point |
 | `build` | Chromium scripts, source pins, package layout and test harnesses |
 
@@ -36,7 +36,11 @@ The October 21 source refresh brings in V8 heap-ownership and platform fixes,
 per-process libuv thread pools, Node path/file-URL and npm integration, file
 notifications, native Electron dialogs and notifications, resident-engine
 launch registration, and Console NG improvements. Original implementation
-commits are preserved in the repository history.
+commits are preserved in the repository history. The Console NG follow-up
+also includes its October 17–21 development work, covering terminal
+protocols, Unicode, scrollback/search, mouse and keyboard handling, clipboard
+and native preferences. Its [component guide](devs/consoleng/README.md) identifies
+the required core handler and ConClip changes and the remaining feature gaps.
 
 The companion Chromium port has native VHI camera and AHI microphone capture.
 A real UGREEN camera and microphone passed combined capture and stop/reopen

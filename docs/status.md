@@ -69,3 +69,21 @@ must not be inferred from the camera test.
 No full SDK/browser/CEF/Node/Electron rebuild was performed just to publish
 these sources and READMEs. Patch replay, source provenance and documentation
 checks are reported separately from the earlier native runtime evidence.
+
+## Console NG publication correction
+
+The initial October 21 web-stack refresh stopped at Console NG's October 16
+cursor-save changes. The follow-up exports its committed development subtree
+from `7df76f55d62bfa88ac3ae20638d07850d8735748`, incorporating the work of
+330 commits beyond the shared `eb9aa26` baseline. Source-owner guidance calls
+for a subtree snapshot and publication-clean documentation rather than merging
+private development history. This includes terminal parsing/rendering,
+Unicode tables, search/navigation, clipboard, input protocols and preferences.
+
+The imported implementation and tests were compared exactly with that committed
+source; public-facing Markdown comes from the matching Contrib delivery, with
+build-path adjustments for this repository.
+The development delivery separately recorded 177 passing host suites and a
+26-stage native integration run; the publication clone also passed all 177 host regression scripts. See [Console NG](../devs/consoleng/README.md) for build targets,
+companion core changes and feature limits. No demo binary or hardware was
+changed by this source publication.

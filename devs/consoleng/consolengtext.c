@@ -212,6 +212,29 @@ static void box_dashes(struct Library *GfxBase, struct RastPort *rp,
     }
 }
 
+/* Unicode Braille uses dots 1,2,3,7 down the left column and 4,5,6,8
+ * down the right. Render the pattern directly, including blank U+2800,
+ * so spinners do not depend on outline-font coverage. Each dot stays inside
+ * its quarter-height, half-width tile even at very small font sizes. */
+static void braille_pattern(struct Library *GfxBase, struct RastPort *rp,
+    UBYTE pattern, LONG x, LONG y, LONG w, LONG h)
+{
+    static const UBYTE bits[4][2] = {{0,3}, {1,4}, {2,5}, {6,7}};
+    WORD row, col;
+
+    for (row = 0; row < 4; row++)
+        for (col = 0; col < 2; col++)
+        {
+            LONG x0 = x + col * w / 2, x1 = x + (col + 1) * w / 2;
+            LONG y0 = y + row * h / 4, y1 = y + (row + 1) * h / 4;
+            LONG dx = (x1 - x0) / 4, dy = (y1 - y0) / 4;
+
+            if (pattern & (1U << bits[row][col]))
+                cell_fill(GfxBase, rp, x0 + dx, y0 + dy,
+                    x1 - dx - 1, y1 - dy - 1);
+        }
+}
+
 static BOOL builtin_glyph(struct Library *GfxBase, struct RastPort *rp,
     ULONG cp)
 {
@@ -220,12 +243,26 @@ static BOOL builtin_glyph(struct Library *GfxBase, struct RastPort *rp,
     LONG x = rp->cp_x, y = rp->cp_y - tf->tf_Baseline;
     UBYTE oldmode = rp->DrawMode;
 
-    if (cp < 0x2500 || cp > 0x259F || w < 2 || h < 2)
+    /* These spacing characters intentionally have no ink. Outline engines
+     * may report their empty bitmap as an unknown glyph; never turn that
+     * into a missing-glyph box. The caller paints the cell background and
+     * handles wide-cell advance; decorations are applied after this helper.
+     * Ogham space (U+1680) is excluded because its glyph can contain a line. */
+    if (w > 0 && ((cp >= 0x2000 && cp <= 0x200a) ||
+        cp == 0x202f || cp == 0x205f || cp == 0x3000)) {
+        Move(rp, x + w, rp->cp_y);
+        return TRUE;
+    }
+
+    if (((cp < 0x2500 || cp > 0x259F) && (cp < 0x2800 || cp > 0x28FF))
+        || w < 2 || h < 2)
         return FALSE;
 
     SetDrMd(rp, JAM1);
 
-    if (cp < 0x2580)
+    if (cp >= 0x2800)
+        braille_pattern(GfxBase, rp, (UBYTE)(cp - 0x2800), x, y, w, h);
+    else if (cp < 0x2580)
     {
         UBYTE arms = box_arms[cp - 0x2500];
         LONG lt = (h >= 20) ? 2 : 1;
@@ -315,10 +352,86 @@ static BOOL builtin_glyph(struct Library *GfxBase, struct RastPort *rp,
     return TRUE;
 }
 
+/* Cell-bounded decoration shared by immediate output and retained redraws.
+ * Explicit logical pens avoid inheriting INVERSVID or a Unicode background pen.
+ * Never decorate concealed text; preserve every raster state we modify. */
+void ConsoleNGStrike(struct Library *GfxBase, struct RastPort *rp,
+    UBYTE flags, LONG x, LONG y, LONG width, LONG height, UBYTE fg, UBYTE bg)
+{
+    UBYTE pen, mode;
+    if (!rp || !(flags & (CON_TXTFLAGS_STRUCK | CON_TXTFLAGS_DOUBLEUNDERLINED)) ||
+        (flags & CON_TXTFLAGS_CONCEALED) || width <= 0 || height <= 0)
+        return;
+    pen = rp->FgPen;
+    mode = rp->DrawMode;
+    SetDrMd(rp, JAM1);
+    SetAPen(rp, (flags & CON_TXTFLAGS_REVERSED) ? bg : fg);
+    if (flags & CON_TXTFLAGS_STRUCK)
+        RectFill(rp, x, y + (height - 1) / 2,
+            x + width - 1, y + (height - 1) / 2);
+    if (flags & CON_TXTFLAGS_DOUBLEUNDERLINED)
+    {
+        LONG upper = y + (height > 2 ? height - 3 : 0);
+        LONG lower = y + height - 1;
+        RectFill(rp, x, upper, x + width - 1, upper);
+        if (lower != upper)
+            RectFill(rp, x, lower, x + width - 1, lower);
+    }
+    SetAPen(rp, pen);
+    SetDrMd(rp, mode);
+}
+
+/* The local Unicode paths bypass graphics/Text(), including its underline
+ * raster. Paint the same baseline-relative stroke after every Unicode glyph,
+ * across its full cell width. Callers already resolve reverse/conceal colors. */
+static void ConsolengUnderline(struct Library *GfxBase, struct RastPort *rp,
+                               ULONG cp, LONG x, LONG baseline)
+{
+    if (!rp || !rp->Font ||
+        !((rp->AlgoStyle | rp->Font->tf_Style) & FSF_UNDERLINED)) return;
+    LONG cells=con_cp_width(cp), h=rp->Font->tf_YSize;
+    LONG width=rp->Font->tf_XSize*cells;
+    LONG row=rp->Font->tf_Baseline+1;
+    if (cells<=0 || width<=0 || h<=0) return;
+    if (row<h-1) row++;
+    if (row>=h) return;
+    UBYTE mode=rp->DrawMode;
+    SetDrMd(rp,JAM1);
+    LONG y=baseline-rp->Font->tf_Baseline+row;
+    RectFill(rp,x,y,x+width-1,y);
+    SetDrMd(rp,mode);
+}
+
+/* A neutral missing-glyph box, independent of font coverage. Diagnostic return
+ * codes stay internal; drawing them as letters changes the apparent text. */
+static void ConsolengMissingGlyph(struct Library *GfxBase, struct RastPort *rp,
+                                  ULONG cp)
+{
+    LONG w, h, x0, y0, x1, y1;
+    UBYTE mode;
+    WORD cells;
+    if (!rp || !rp->Font) return;
+    cells = con_cp_width(cp);
+    if (cells <= 0 || !rp->Font->tf_XSize || !rp->Font->tf_YSize) return;
+    w = (LONG)rp->Font->tf_XSize * cells;
+    h = rp->Font->tf_YSize;
+    x0 = rp->cp_x + (w > 2 ? 1 : 0);
+    y0 = rp->cp_y - rp->Font->tf_Baseline + (h > 2 ? 1 : 0);
+    x1 = rp->cp_x + w - 1 - (w > 2 ? 1 : 0);
+    y1 = rp->cp_y - rp->Font->tf_Baseline + h - 1 - (h > 2 ? 1 : 0);
+    mode = rp->DrawMode;
+    SetDrMd(rp, JAM1);
+    RectFill(rp, x0, y0, x1, y0);
+    RectFill(rp, x0, y1, x1, y1);
+    RectFill(rp, x0, y0, x0, y1);
+    RectFill(rp, x1, y0, x1, y1);
+    SetDrMd(rp, mode);
+}
+
 void ConsoleNGTextUTF8(struct Library *GfxBase,
                        struct ConsoleBase *ConsoleDevice,
                        struct RastPort *rp,
-                       CONST_STRPTR string, ULONG byteLen)
+                       CONST_STRPTR string, ULONG byteLen, BOOL emoji)
 {
     const UBYTE *p   = (const UBYTE *)string;
     const UBYTE *end = p + byteLen;
@@ -330,28 +443,15 @@ void ConsoleNGTextUTF8(struct Library *GfxBase,
     {
         const UBYTE *prev = p;
         ULONG        cp   = ConsoleNGUTF8Next(&p, end);
+        LONG glyphX=rp->cp_x, glyphY=rp->cp_y;
 
         if (cp < 0x100)
         {
-            /* Latin-1 and below: draw it properly as a single byte. This is
-               the SAME rule charmapconclass.c:1113 uses on the refresh path
-               ("if (str[idx] < 0x100) ... Text()"), and matching it here
-               matters for two reasons.
-
-               First, it is the factory ceiling. diskfont pre-renders glyphs
-               0-255 only (bullet.c: {OT_GlyphCode, (i < 256) ? i : 0x25A1}),
-               so Latin-1 is exactly what the stock console can draw and
-               exactly what this device should still draw without a live
-               glyph engine. Throwing it away would make this device WORSE
-               than the one it sits beside.
-
-               Second, the write path disagrees with the refresh path:
-               stdconclass.c:427 sends everything >= 0x80 here, while the
-               refresh keeps < 0x100 on Text(). That asymmetry is harmless in
-               that tree, whose TextUTF8 renders Latin-1 through the engine, but
-               with a placeholder it made a freshly-typed 'a-umlaut' show as
-               '?' and then correct itself on the next redraw. Handling it
-               here removes the inconsistency. */
+            /* Defensive Latin-1 handling for callers of this helper. The
+             * immediate and retained console paths now route these cells
+             * directly through native Text() with their normal raster style.
+             * diskfont pre-renders glyphs 0-255, so these characters need no
+             * live outline engine and must not become fallback boxes. */
             UBYTE byte = (UBYTE)cp;
 
             Text(rp, (CONST_STRPTR)&byte, 1);
@@ -371,27 +471,54 @@ void ConsoleNGTextUTF8(struct Library *GfxBase,
                to be had - a bitmap font, a font with no outline engine, or a
                codepoint the face does not cover. */
             LONG why = ConsolengGlyphDraw(GfxBase, ConsoleDevice, rp, cp,
-                                          rp->cp_x, rp->cp_y);
+                                          rp->cp_x, rp->cp_y, emoji);
 
             if (why != CONSOLENG_GLYPH_OK)
-            {
-                /* Draw the REASON, not a generic '?'. See the note in
-                   console_gcc.h: this device cannot use kprintf, so the
-                   rendered cell is the only diagnostic channel it has. */
-                UBYTE d = (why < 10) ? (UBYTE)('0' + why)
-                                     : (UBYTE)('A' + (why - 10));
-
-                Text(rp, (CONST_STRPTR)&d, 1);
-            }
-            else
-            {
-                /* BltTemplate does not move the pen; keep the caller's cell
-                   arithmetic intact by advancing one character width. */
-                Move(rp, rp->cp_x + rp->Font->tf_XSize, rp->cp_y);
-            }
+                ConsolengMissingGlyph(GfxBase, rp, cp);
+            /* The callers account for wide cells. Both glyph paths leave the
+             * RastPort pen fixed, matching the original one-character step. */
+            Move(rp, rp->cp_x + rp->Font->tf_XSize, rp->cp_y);
         }
+
+        if (cp>=0x100)
+            ConsolengUnderline(GfxBase,rp,cp,glyphX,glyphY);
 
         if (p <= prev)
             break;               /* never loop on a zero-width step */
     }
+}
+
+/* Private SGR 4:3/4:4/4:5 decoration, bounded to the cell rectangle.
+ * Screen-relative phase makes separately written and retained runs agree. */
+void ConsoleNGStyledUnderline(struct Library *GfxBase, struct RastPort *rp,
+    UBYTE flags, LONG x, LONG y, LONG width, LONG height,
+    UBYTE fg, UBYTE bg, UBYTE style)
+{
+    UBYTE pen, mode;
+    LONG offset, period;
+    if (!rp || !(flags & CON_TXTFLAGS_UNDERLINED) ||
+        (flags & CON_TXTFLAGS_CONCEALED) || width <= 0 || height <= 0 ||
+        style < 1 || style > 3)
+        return;
+    pen = rp->FgPen;
+    mode = rp->DrawMode;
+    SetDrMd(rp, JAM1);
+    SetAPen(rp, (flags & CON_TXTFLAGS_REVERSED) ? bg : fg);
+    period = style == 1 ? 4 : style == 2 ? 2 : 6;
+    for (offset = 0; offset < width; offset++)
+    {
+        LONG phase = ((x % period) + (offset % period) + period) % period;
+        LONG row = y + height - 1;
+        if (style == 1)
+        {
+            LONG rise = phase == 3 ? 1 : phase;
+            if (rise >= height) rise = height - 1;
+            row -= rise;
+        }
+        else if ((style == 2 && phase != 0) || (style == 3 && phase >= 4))
+            continue;
+        RectFill(rp, x + offset, row, x + offset, row);
+    }
+    SetAPen(rp, pen);
+    SetDrMd(rp, mode);
 }

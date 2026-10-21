@@ -37,8 +37,19 @@ enum
     M_Console_HandleGadgets,
     M_Console_Copy,
     M_Console_Paste,
-    M_Console_GetColorPen = M_Console_Paste + 5
+    M_Console_GetColorPen = M_Console_Paste + 5,
+    /* Private input interception; append to preserve all existing IDs. */
+    M_Console_FilterInput,
+    M_Console_QueryPaste,
+    M_Console_SelectAll,
+    M_Console_CursorSpan, /* private: 1=single, 2=wide lead, 3=wide continuation */
+    M_Console_HistoryAction
 };
+
+struct P_Console_HistoryAction { ULONG MethodID, Action; };
+#define Console_HistoryAction(o, action) \
+    ({ struct P_Console_HistoryAction p = {M_Console_HistoryAction, action}; \
+       DoMethodA((Object *)(o), (Msg)&p); })
 
 struct P_Console_ScrollDown
 {
@@ -120,6 +131,23 @@ struct P_Console_HandleGadgets
 {
     ULONG MethodID;
     struct InputEvent *Event;
+};
+
+/* Return nonzero only when the console owns this key event. Called before
+ * raw event serialization, key conversion, clipboard shortcuts and CMD_READ. */
+struct P_Console_FilterInput
+{
+    ULONG MethodID;
+    struct InputEvent *Event;
+};
+
+struct P_Console_QueryPaste
+{
+    ULONG MethodID;
+    UQUAD Revision;
+    const UBYTE *Data;
+    ULONG Length;
+    BOOL UTF8, Valid;
 };
 
 struct P_Console_GetDefaultParams
@@ -235,6 +263,37 @@ struct P_Console_GetColorPen
     p.MethodID	= M_Console_HandleGadgets;	\
     p.Event = e;	      			\
     DoMethodA((o), (Msg)&p);			\
+})
+
+#define Console_FilterInput(o, e)                 \
+({                                               \
+    struct P_Console_FilterInput p;               \
+    p.MethodID = M_Console_FilterInput;           \
+    p.Event = e;                                 \
+    DoMethodA((o), (Msg)&p);                      \
+})
+
+#define Console_QueryPaste(o, revision, bytes, length, utf8, valid) \
+({                                                               \
+    struct P_Console_QueryPaste p;                                \
+    p.MethodID = M_Console_QueryPaste;                            \
+    p.Revision = revision; p.Data = bytes; p.Length = length;      \
+    p.UTF8 = utf8; p.Valid = valid;                               \
+    DoMethodA((o), (Msg)&p);                                       \
+})
+
+#define Console_CursorSpan(o) \
+({ \
+    struct P_Console_Copy p; \
+    p.MethodID = M_Console_CursorSpan; \
+    DoMethodA((o), (Msg)&p); \
+})
+
+#define Console_SelectAll(o) \
+({ \
+    struct P_Console_Copy p; \
+    p.MethodID = M_Console_SelectAll; \
+    DoMethodA((o), (Msg)&p); \
 })
 
 #define Console_Copy(o)	       	\

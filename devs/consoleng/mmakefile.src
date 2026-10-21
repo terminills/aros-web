@@ -28,7 +28,7 @@ include $(SRCDIR)/config/aros.cfg
 #     are internal to a module, so there is no clash with the stock device and
 #     no source edits are needed to rename them.
 
-FILES	:=  support consoleclass stdconclass charmapconclass rendezvous charmap snipmapconclass consoletask consolengtext consolengglyph
+FILES	:=  support sync_output keyboard_protocol bindings consoleclass stdconclass charmapconclass rendezvous charmap charmap_reflow mouse_report url_action hyperlink search search_regex query_clipboard copy_clipboard read_clipboard osc_clipboard snipmapconclass consoletask consolengtext consolengglyph
 FUNCS	:=  cdinputhandler rawkeyconvert setconsnip getconsnip addconsniphook remconsniphook
 
 #MM- workbench-devs-complete : workbench-devs-consoleng

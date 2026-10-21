@@ -21,6 +21,23 @@
 #include <aros/debug.h>
 
 /* protos */
+/* Intuition names the affected window for focus, resize and refresh events.
+ * These events may concern an inactive window; keyboard/mouse events still
+ * use the current active window. */
+static struct Window *event_window(const struct InputEvent *event)
+{
+    switch (event->ie_Class)
+    {
+    case IECLASS_ACTIVEWINDOW:
+    case IECLASS_INACTIVEWINDOW:
+    case IECLASS_SIZEWINDOW:
+    case IECLASS_REFRESHWINDOW:
+        return (struct Window *)event->ie_EventAddress;
+    default:
+        return NULL;
+    }
+}
+
 static Object *obtainconunit(struct Window *window,
     struct ConsoleBase *ConsoleDevice);
 static VOID releaseconunit(Object *o, struct ConsoleBase *ConsoleDevice);
@@ -86,11 +103,7 @@ static VOID releaseconunit(Object *o, struct ConsoleBase *ConsoleDevice);
 
             D(bug("Got some event\n"));
             /* find and prevent deletion of unit */
-            unit = obtainconunit(
-                (ie->ie_Class == IECLASS_ACTIVEWINDOW ||
-                 ie->ie_Class == IECLASS_INACTIVEWINDOW) ?
-                    (struct Window *)ie->ie_EventAddress : NULL,
-                ConsoleDevice);
+            unit = obtainconunit(event_window(ie), ConsoleDevice);
             if (unit)
             {
                 /* Hand the event to the console task asynchronously: one
@@ -112,7 +125,13 @@ static VOID releaseconunit(Object *o, struct ConsoleBase *ConsoleDevice);
                 {
                     message->msg.mn_Length = sizeof(struct cdihMessage);
                     message->unit = unit;
+                    message->unitGeneration = ICU(unit)->inputGeneration;
                     message->ie = *ie;
+                    if (CU(unit)->cu_Window)
+                    {
+                        message->mouseX = CU(unit)->cu_Window->MouseX;
+                        message->mouseY = CU(unit)->cu_Window->MouseY;
+                    }
                     PutMsg(cdihdata->inputPort, (struct Message *)message);
                 }
 
@@ -150,19 +169,13 @@ static Object *obtainconunit(struct Window *window,
     struct Window *activewin;
     Object *o, *ostate;
     ULONG lock;
-    struct Node *node;
 
     D(bug("obtainconunit()\n"));
-
-    ForeachNode(&ConsoleDevice->unitList, node)
-    {
-        D(bug("Node: %p\n", node));
-    }
 
     /* Lock the console list */
     ObtainSemaphoreShared(&ConsoleDevice->unitListLock);
 
-    /* Activation events name the affected window explicitly.  This matters
+    /* Window events name the affected window explicitly. This matters
      * for INACTIVEWINDOW, because ActiveWindow already points at the newly
      * activated window by the time the event is delivered. */
     if (window)
@@ -189,41 +202,24 @@ static Object *obtainconunit(struct Window *window,
             && !(ICU(o)->conFlags & CF_OBSCURED))
         {
             D(bug("Unit found: %p\n", o));
-            /* Delay deltion of this console object */
-            ICU(o)->conFlags |= CF_DELAYEDDISPOSE;
+            /* Keep the shared list lock until the event has been copied
+             * and queued. Close takes it exclusively before unlinking. */
             break;
         }
     }
 
     /* Unlock the console list */
-    ReleaseSemaphore(&ConsoleDevice->unitListLock);
+    if (!o)
+        ReleaseSemaphore(&ConsoleDevice->unitListLock);
 
     ReturnPtr("obtainconunit", Object *, o);
 }
 
 static VOID releaseconunit(Object *o, struct ConsoleBase *ConsoleDevice)
 {
-    struct IntuitionBase *IntuitionBase =
-        (APTR) ConsoleDevice->cb_IntuitionBase;
-
-    /* Lock all units */
-    ObtainSemaphore(&ConsoleDevice->unitListLock);
-
-    /* Needn't prevent the unit from being disposed anymore */
-    ICU(o)->conFlags &= ~CF_DELAYEDDISPOSE;
-
-    /* If unit is scheduled for deletion, then delete it */
-    if (ICU(o)->conFlags & CF_DISPOSE)
-    {
-        ULONG mID = OM_REMOVE;
-
-        /* Remove from list */
-        DoMethodA(o, (Msg) &mID);
-
-        /* Delete it */
-        DisposeObject(o);
-    }
-
+    (void)o;
+    /* Never acquire consoleTaskLock here: the input task must not wait
+     * for rendering while Intuition may hold the window's layer locks. */
     ReleaseSemaphore(&ConsoleDevice->unitListLock);
 }
 

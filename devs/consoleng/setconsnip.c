@@ -15,33 +15,22 @@ AROS_LH1(LONG, SetConSnip,
 {
     AROS_LIBFUNC_INIT
 
-    /* data = NUL-terminated string */
-    ULONG size;
-    LONG ret = 0;
+    /* Allocate before publishing: failure must preserve the previous snip.
+     * A NULL/empty input still clears it and returns zero, as before. */
+    ULONG size = data ? strlen(data) : 0;
+    APTR replacement = size ? AllocMem(size, MEMF_PUBLIC) : NULL;
+    if (size && !replacement)
+        return 0;
+    if (size)
+        CopyMem(data, replacement, size);
 
     ObtainSemaphore(&ConsoleDevice->copyBufferLock);
-
-    FreeMem((APTR) ConsoleDevice->copyBuffer,
-        ConsoleDevice->copyBufferSize);
-    ConsoleDevice->copyBufferSize = 0;
-    if (data)
-    {
-        size = strlen(data);
-        if (size)
-        {
-            ConsoleDevice->copyBuffer = AllocMem(size, MEMF_PUBLIC);
-            if (ConsoleDevice->copyBuffer)
-            {
-                CopyMem(data, (APTR) ConsoleDevice->copyBuffer, size);
-                ConsoleDevice->copyBufferSize = size;
-                ret = 1;
-            }
-        }
-    }
-
+    FreeMem((APTR) ConsoleDevice->copyBuffer, ConsoleDevice->copyBufferSize);
+    ConsoleDevice->copyBuffer = replacement;
+    ConsoleDevice->copyBufferSize = size;
     ReleaseSemaphore(&ConsoleDevice->copyBufferLock);
 
-    return ret;
+    return size != 0;
 
     AROS_LIBFUNC_EXIT
 }

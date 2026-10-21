@@ -91,7 +91,7 @@ static VOID snipmapcon_paste(Class *cl, Object *o, Msg msg)
     ObtainSemaphore(&ConsoleDevice->copyBufferLock);
     D(bug("Pasting directly (ConClip not found) %p,%d\n",
             ConsoleDevice->copyBuffer, ConsoleDevice->copyBufferSize));
-    con_inject(ConsoleDevice, CU(o), ConsoleDevice->copyBuffer,
+    con_inject_paste(ConsoleDevice, CU(o), ConsoleDevice->copyBuffer,
         ConsoleDevice->copyBufferSize);
     ReleaseSemaphore(&ConsoleDevice->copyBufferLock);
 }

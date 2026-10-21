@@ -23,42 +23,147 @@
 #include "console_gcc.h"
 #include "consoleif.h"
 
-VOID con_inject(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
-    const UBYTE *data, LONG size)
+/* The unit generation must be validated before this is called. Keep local
+ * console commands out of both raw reports and converted application input.
+ * Non-key events (notably close/resize/focus/timer) must continue normally. */
+static BOOL con_filter_local_input(Object *unit, struct InputEvent *event)
+{
+    return event->ie_Class == IECLASS_RAWKEY && Console_FilterInput(unit, event);
+}
+
+/* Queue one complete injection. Clipboard framing is opt-in here; terminal
+ * replies and the ConClip request spelling must always remain unframed. */
+static VOID con_queue_data(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
+    const UBYTE *data, LONG size, BOOL clipboard)
 {
     struct intConUnit *icu = ICU(cu);
     ObtainSemaphore(&ConsoleDevice->consoleTaskLock);
-    if (data && size)
+    if (data)
     {
-        struct intPasteData *p =
-            AllocMem(sizeof(struct intPasteData), MEMF_ANY);
-        if (p)
+        size_t length = size < 0 ? strlen((const char *)data) : (size_t)size;
+        BOOL bracketed = clipboard && (icu->conFlags & CF_BRACKETED_PASTE);
+        if ((length || bracketed) && length <= 0x7fffffffUL - (bracketed ? 12 : 0))
         {
-            if (size < 0)
-                size = strlen(data);
-            p->pasteBuffer = AllocMem(size, MEMF_ANY);
-            if (p->pasteBuffer)
+            struct intPasteData *p = AllocMem(sizeof(*p), MEMF_ANY);
+            if (p)
             {
-                CopyMem((APTR) data, p->pasteBuffer, size);
-                p->pasteBufferSize = size;
-                p->unit = icu;
-                AddTail((struct List *)&icu->pasteData, (struct Node *)p);
-                D(bug("con_inject(%x %x %x %d)\n", icu, p, p->pasteBuffer,
-                        p->pasteBufferSize));
-            }
-            else
-            {
-                FreeMem(p, sizeof(struct intPasteData));
+                ULONG capacity = length + (bracketed ? 12 : 0);
+                p->pasteBuffer = AllocMem(capacity, MEMF_ANY);
+                if (p->pasteBuffer)
+                {
+                    ULONG used = 0, i;
+                    if (bracketed)
+                    {
+                        CopyMem("\x1b[200~", p->pasteBuffer, 6);
+                        used = 6;
+                        for (i = 0; i < length; i++)
+                            if (data[i] != 27 && data[i] != 3)
+                                p->pasteBuffer[used++] = data[i];
+                        CopyMem("\x1b[201~", p->pasteBuffer + used, 6);
+                        used += 6;
+                    }
+                    else
+                    {
+                        CopyMem((APTR)data, p->pasteBuffer, length);
+                        used = length;
+                    }
+                    p->pasteBufferSize = used;
+                    p->pasteAllocationSize = capacity;
+                    p->unit = icu;
+                    AddTail((struct List *)&icu->pasteData, (struct Node *)p);
+                }
+                else FreeMem(p, sizeof(*p));
             }
         }
     }
     ReleaseSemaphore(&ConsoleDevice->consoleTaskLock);
-    /* Wake up possible waiting CMD_READs */
     Signal(ConsoleDevice->consoleTask, SIGBREAKF_CTRL_D);
 }
 
+VOID con_inject(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
+    const UBYTE *data, LONG size)
+{
+    con_queue_data(ConsoleDevice, cu, data, size, FALSE);
+}
+
+VOID con_inject_paste(struct ConsoleBase *ConsoleDevice, struct ConUnit *cu,
+    const UBYTE *data, LONG size)
+{
+    con_queue_data(ConsoleDevice, cu, data, size, TRUE);
+}
+
 /* Protos */
-static BOOL checkconunit(Object *unit, struct ConsoleBase *ConsoleDevice);
+/* Translate only unmodified cursor-key sequences. Modified CSI sequences
+ * and ordinary text retain their keymap spelling. The buffer has room for ESC O. */
+static LONG con_application_cursor(UBYTE *bytes, LONG length, ULONG flags)
+{
+    LONG final;
+    if (!(flags & CF_APPLICATION_CURSOR))
+        return length;
+    if (length == 2 && bytes[0] == 0x9b)
+        final = 1;
+    else if (length == 3 && bytes[0] == 0x1b && bytes[1] == '[')
+        final = 2;
+    else
+        return length;
+    if (!strchr("ABCDHF", bytes[final]) || bytes[final] == 0)
+        return length;
+    UBYTE key = bytes[final];
+    bytes[0] = 0x1b; bytes[1] = 'O'; bytes[2] = key;
+    return 3;
+}
+
+/* UTF-8 applications use xterm modifiers for navigation and function keys.
+ * Classic mode, Amiga command shortcuts, releases and unmodified keymap
+ * output remain untouched. The caller supplies at least seven writable bytes. */
+static LONG con_modified_navigation(UBYTE *bytes, LONG length,
+    const struct InputEvent *event, BOOL utf8)
+{
+    ULONG q = event->ie_Qualifier;
+    UBYTE modifier = 1, base = '1', final, tens = 0;
+    if (!utf8 || event->ie_Class != IECLASS_RAWKEY ||
+        (event->ie_Code & IECODE_UP_PREFIX) ||
+        (q & (IEQUALIFIER_LCOMMAND | IEQUALIFIER_RCOMMAND)))
+        return length;
+    if (q & (IEQUALIFIER_LSHIFT | IEQUALIFIER_RSHIFT)) modifier += 1;
+    if (q & (IEQUALIFIER_LALT | IEQUALIFIER_RALT)) modifier += 2;
+    if (q & IEQUALIFIER_CONTROL) modifier += 4;
+    if (modifier == 1) return length;
+    switch (event->ie_Code)
+    {
+    case RAWKEY_UP: final = 'A'; break;
+    case RAWKEY_DOWN: final = 'B'; break;
+    case RAWKEY_RIGHT: final = 'C'; break;
+    case RAWKEY_LEFT: final = 'D'; break;
+    case RAWKEY_HOME: final = 'H'; break;
+    case RAWKEY_END: final = 'F'; break;
+    case RAWKEY_INSERT: base = '2'; final = '~'; break;
+    case RAWKEY_DELETE: base = '3'; final = '~'; break;
+    case RAWKEY_PAGEUP: base = '5'; final = '~'; break;
+    case RAWKEY_PAGEDOWN: base = '6'; final = '~'; break;
+    case RAWKEY_F1: final = 'P'; break;
+    case RAWKEY_F2: final = 'Q'; break;
+    case RAWKEY_F3: final = 'R'; break;
+    case RAWKEY_F4: final = 'S'; break;
+    case RAWKEY_F5: tens = '1'; base = '5'; final = '~'; break;
+    case RAWKEY_F6: tens = '1'; base = '7'; final = '~'; break;
+    case RAWKEY_F7: tens = '1'; base = '8'; final = '~'; break;
+    case RAWKEY_F8: tens = '1'; base = '9'; final = '~'; break;
+    case RAWKEY_F9: tens = '2'; base = '0'; final = '~'; break;
+    case RAWKEY_F10: tens = '2'; base = '1'; final = '~'; break;
+    case RAWKEY_F11: tens = '2'; base = '3'; final = '~'; break;
+    case RAWKEY_F12: tens = '2'; base = '4'; final = '~'; break;
+    default: return length;
+    }
+    LONG out = 0;
+    bytes[out++] = 27; bytes[out++] = '[';
+    if (tens) bytes[out++] = tens;
+    bytes[out++] = base; bytes[out++] = ';';
+    bytes[out++] = '0' + modifier; bytes[out++] = final;
+    return out;
+}
+
+static BOOL checkconunit(Object *unit, UQUAD generation, struct ConsoleBase *ConsoleDevice);
 static void answer_read_request(struct IOStdReq *req,
     struct ConsoleBase *ConsoleDevice);
 
@@ -142,6 +247,151 @@ static BOOL report_raw_event(Object *unit, const struct InputEvent *event,
     return TRUE;
 }
 
+/* Application-negotiated focus reports share the normal input queue. The
+ * caller gives classic Amiga raw-event requests precedence. */
+static void report_focus_event(Object *unit, const struct InputEvent *event,
+    struct ConsoleBase *ConsoleDevice)
+{
+    struct intConUnit *icu = ICU(unit);
+    UBYTE report[3] = {27, '[', 'O'};
+
+    if (!(icu->conFlags & CF_FOCUS_REPORTING) ||
+        (event->ie_Class != IECLASS_ACTIVEWINDOW &&
+         event->ie_Class != IECLASS_INACTIVEWINDOW))
+        return;
+
+    if (event->ie_Class == IECLASS_ACTIVEWINDOW)
+        report[2] = 'I';
+    if (sizeof(report) <= CON_INPUTBUF_SIZE - icu->numStoredChars)
+    {
+        CopyMem(report, icu->inputBuf + icu->numStoredChars, sizeof(report));
+        icu->numStoredChars += sizeof(report);
+        answer_requests(unit, ConsoleDevice);
+    }
+}
+
+/* Mode1007 is opt-in for native CON compatibility. Mouse protocols and
+ * classic raw events have priority; Shift keeps native history scrolling. */
+static BOOL report_alternate_scroll(Object *unit, const struct InputEvent *event,
+    struct ConsoleBase *ConsoleDevice)
+{
+    struct intConUnit *icu = ICU(unit);
+    ULONG alternate = 0;
+    IPTR params[] = {TRUE, 1049, (IPTR)&alternate};
+    if (!(icu->conFlags & CF_ALTERNATE_SCROLL) || icu->mouseMode ||
+        CON_IS_OBSCURED(unit) || !CU(unit)->cu_Window ||
+        event->ie_Class != IECLASS_RAWKEY ||
+        (event->ie_Qualifier & (IEQUALIFIER_LSHIFT | IEQUALIFIER_RSHIFT)) ||
+        (event->ie_Code < RAWKEY_NM_WHEEL_UP || event->ie_Code > RAWKEY_NM_WHEEL_RIGHT))
+        return FALSE;
+    Console_DoCommand(unit, C_GET_MODE_STATE, 3, params);
+    if (alternate != 1) return FALSE;
+    ULONG count=icu->wheelLines;
+    ULONG available=icu->numStoredChars<=CON_INPUTBUF_SIZE?
+        (CON_INPUTBUF_SIZE-icu->numStoredChars)/3:0;
+    if(count>available)count=available;
+    if(count){
+        for(ULONG i=0;i<count;i++){
+            UBYTE *out=icu->inputBuf+icu->numStoredChars;
+            out[0]=27;out[1]='O';
+            out[2]="ABDC"[event->ie_Code-RAWKEY_NM_WHEEL_UP];
+            icu->numStoredChars+=3;
+        }
+        answer_requests(unit,ConsoleDevice);
+    }
+    return TRUE;
+}
+
+/* Classic raw-event consumers run first. Shift keeps native selection and
+ * wheel scrolling even while a terminal application requests mouse reports. */
+static BOOL report_mouse_event(Object *unit, const struct InputEvent *event,
+    LONG px, LONG py, struct ConsoleBase *ConsoleDevice)
+{
+    struct intConUnit *icu=ICU(unit);
+    struct ConUnit *cu=CU(unit);
+    struct Window *w=cu->cu_Window;
+    BOOL wheel=event->ie_Class==IECLASS_RAWKEY &&
+        (event->ie_Code>=RAWKEY_NM_WHEEL_UP && event->ie_Code<=RAWKEY_NM_WHEEL_RIGHT);
+    BOOL motion=event->ie_Class==IECLASS_RAWMOUSE && event->ie_Code==IECODE_NOBUTTON;
+    BOOL release=FALSE;
+    ULONG button, len, captureBit=0;
+    BOOL captured=FALSE;
+    LONG x,y;
+    UBYTE report[40];
+    /* Only a press delivered to the application owns an outside release.
+     * Native border gadgets and Shift selection retain their own events. */
+    if (event->ie_Class==IECLASS_RAWMOUSE && !motion)
+    {
+        switch (event->ie_Code & ~IECODE_UP_PREFIX)
+        {
+        case IECODE_LBUTTON: captureBit=1; break;
+        case IECODE_MBUTTON: captureBit=2; break;
+        case IECODE_RBUTTON: captureBit=4; break;
+        }
+        release=!!(event->ie_Code & IECODE_UP_PREFIX);
+        captured=release && (icu->mouseReportedButtons & captureBit);
+        if (release) icu->mouseReportedButtons &= ~captureBit;
+    }
+    /* Intuition retains raw mouse events for lower-priority handlers even
+     * when a native menu/requester owns them. Do not duplicate its right
+     * button gesture into the terminal unless the application traps it.
+     * A press already delivered to the terminal still owns its release. */
+    if (!captured && w && !(w->Flags & WFLG_RMBTRAP) &&
+        (w->MenuStrip || w->DMRequest) &&
+        (captureBit == 4 || (motion && (event->ie_Qualifier & IEQUALIFIER_RBUTTON))))
+        return FALSE;
+    if (!icu->mouseMode || !w || CON_IS_OBSCURED(unit) ||
+        (event->ie_Qualifier & (IEQUALIFIER_LSHIFT|IEQUALIFIER_RSHIFT)) ||
+        (event->ie_Class!=IECLASS_RAWMOUSE && !wheel)) return FALSE;
+    if (w->Flags & WFLG_GIMMEZEROZERO) { px-=w->BorderLeft; py-=w->BorderTop; }
+    px-=cu->cu_XROrigin; py-=cu->cu_YROrigin;
+    if (cu->cu_XRSize<=0 || cu->cu_YRSize<=0 ||
+        cu->cu_XMax<0 || cu->cu_YMax<0) return FALSE;
+    if (!captured && (px<0 || py<0)) return FALSE;
+    x=px<0 ? 0 : px/cu->cu_XRSize;
+    y=py<0 ? 0 : py/cu->cu_YRSize;
+    if (x>cu->cu_XMax || y>cu->cu_YMax)
+    {
+        if (!captured) return FALSE;
+        if (x>cu->cu_XMax) x=cu->cu_XMax;
+        if (y>cu->cu_YMax) y=cu->cu_YMax;
+    }
+    if (wheel) button=64+event->ie_Code-RAWKEY_NM_WHEEL_UP;
+    else if (motion)
+    {
+        if (event->ie_Qualifier & IEQUALIFIER_LEFTBUTTON) button=0;
+        else if (event->ie_Qualifier & IEQUALIFIER_MIDBUTTON) button=1;
+        else if (event->ie_Qualifier & IEQUALIFIER_RBUTTON) button=2;
+        else button=3;
+        if (icu->mouseMode==1000 || (icu->mouseMode==1002 && button==3)) return TRUE;
+        if (icu->mouseLastValid && x==icu->mouseLastX && y==icu->mouseLastY) return TRUE;
+        button+=32;
+    }
+    else
+    {
+        switch (event->ie_Code & ~IECODE_UP_PREFIX)
+        {
+        case IECODE_LBUTTON: button=0; break;
+        case IECODE_MBUTTON: button=1; break;
+        case IECODE_RBUTTON: button=2; break;
+        default: return FALSE;
+        }
+        release=!!(event->ie_Code & IECODE_UP_PREFIX);
+    }
+    if (event->ie_Qualifier & (IEQUALIFIER_LALT|IEQUALIFIER_RALT)) button|=8;
+    if (event->ie_Qualifier & IEQUALIFIER_CONTROL) button|=16;
+    len=con_mouse_encode(icu->mouseSGR,icu->mouseUTF8,button,release,x,y,report,sizeof(report));
+    if (len && len<=CON_INPUTBUF_SIZE-icu->numStoredChars)
+    {
+        CopyMem(report,icu->inputBuf+icu->numStoredChars,len);
+        icu->numStoredChars+=len;
+        if (!release) icu->mouseReportedButtons |= captureBit;
+        icu->mouseLastValid=TRUE; icu->mouseLastX=x; icu->mouseLastY=y;
+        answer_requests(unit,ConsoleDevice);
+    }
+    return TRUE;
+}
+
 static ULONG pasteData(struct intConUnit *icu,
     struct ConsoleBase *ConsoleDevice)
 {
@@ -162,7 +412,7 @@ static ULONG pasteData(struct intConUnit *icu,
 
         if (icu->pasteBufferPos >= pd->pasteBufferSize)
         {
-            FreeMem(pd->pasteBuffer, pd->pasteBufferSize);
+            FreeMem(pd->pasteBuffer, pd->pasteAllocationSize);
             Remove((struct Node *)pd);
             FreeMem(pd, sizeof(struct intPasteData));
             icu->pasteBufferPos = 0;
@@ -237,7 +487,8 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
     inputsig = 1 << inputport->mp_SigBit;
     commandsig = 1 << ConsoleDevice->commandPort->mp_SigBit;
 
-    waitsigs = inputsig | commandsig | SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D;
+    waitsigs = inputsig | commandsig | SIGBREAKF_CTRL_C | SIGBREAKF_CTRL_D |
+        SIGBREAKF_CTRL_E;
 
     for (;;)
     {
@@ -253,6 +504,10 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
 
         if (wakeupsig & SIGBREAKF_CTRL_D)
         {
+            con_sync_poll(ConsoleDevice);
+            con_copy_clipboard_poll();
+            con_osc_read_poll(ConsoleDevice, checkconunit);
+            con_query_clipboard_poll(ConsoleDevice, checkconunit);
             struct IOStdReq *req;
             BOOL active = TRUE;
             D(bug("SIGBREAKF_CTRL_D\n"));
@@ -282,10 +537,17 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                 /* Check that the ConUnit has not been disposed,
                    while the message was passed
                  */
-                if (checkconunit(cdihmsg->unit, ConsoleDevice))
+                if (checkconunit(cdihmsg->unit, cdihmsg->unitGeneration, ConsoleDevice) &&
+                    !con_filter_local_input(cdihmsg->unit, &cdihmsg->ie))
                 {
                     BOOL rawEvent = report_raw_event(cdihmsg->unit,
                         &cdihmsg->ie, ConsoleDevice);
+
+                    BOOL mouseEvent = !rawEvent && report_mouse_event(cdihmsg->unit,
+                        &cdihmsg->ie, cdihmsg->mouseX, cdihmsg->mouseY, ConsoleDevice);
+
+                    if (!rawEvent)
+                        report_focus_event(cdihmsg->unit, &cdihmsg->ie, ConsoleDevice);
 
                     switch (cdihmsg->ie.ie_Class)
                     {
@@ -300,13 +562,130 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                     case IECLASS_RAWKEY:
                         {
 #define MAPRAWKEY_BUFSIZE 80
+/* Decimal associated-text fields expand every native byte to up to four. */
+#define KEYINPUT_BUFSIZE (MAPRAWKEY_BUFSIZE * 4 + 32)
 
-                            UBYTE inputBuf[MAPRAWKEY_BUFSIZE + 1];
+                            UBYTE inputBuf[KEYINPUT_BUFSIZE + 1];
                             LONG actual;
                             ULONG tocopy;
                             struct InputEvent e;
 
-                            if (rawEvent)
+                            if (rawEvent || mouseEvent)
+                                break;
+
+                            if (cdihmsg->ie.ie_Class == IECLASS_RAWKEY) {
+                                UBYTE *held = ICU(cdihmsg->unit)->bindingSwallowed;
+                                UBYTE *original = ICU(cdihmsg->unit)->bindingHeldAction;
+                                ULONG code = cdihmsg->ie.ie_Code & 127;
+                                ULONG context=ICU(cdihmsg->unit)->keyboardAlternate?CONSOLENG_BIND_ALTSCREEN:0;
+                                if(ICU(cdihmsg->unit)->conFlags&CF_APPLICATION_CURSOR)context|=CONSOLENG_BIND_APPCURSOR;
+                                if(ICU(cdihmsg->unit)->conFlags&CF_APPLICATION_KEYPAD)context|=CONSOLENG_BIND_APPKEYPAD;
+                                ULONG action = con_binding_action_in_context(&ICU(cdihmsg->unit)->bindings,
+                                    &cdihmsg->ie, ConsoleDevice,context);
+                                if (con_binding_release(held, &cdihmsg->ie)) {
+                                    if (con_binding_repeat(original[code], action, &cdihmsg->ie)) {
+                                        if (action == CONSOLENG_BIND_FONTLARGER || action == CONSOLENG_BIND_FONTSMALLER) {
+                                            IPTR zoom = action;
+                                            Console_DoCommand(cdihmsg->unit,C_ZOOM_FONT,1,&zoom);
+                                        } else Console_HistoryAction(cdihmsg->unit, action);
+                                    }
+                                    if (cdihmsg->ie.ie_Code & IECODE_UP_PREFIX) original[code]=0;
+                                    break;
+                                }
+                                original[code]=0;
+                                BOOL handled = FALSE;
+                                switch (action) {
+                                case CONSOLENG_BIND_COPY:
+                                    Console_Copy(cdihmsg->unit); handled=TRUE; break;
+                                case CONSOLENG_BIND_PASTE:
+                                    Console_Paste(cdihmsg->unit);
+                                    if (ICU(cdihmsg->unit)->numStoredChars)
+                                        answer_requests(cdihmsg->unit, ConsoleDevice);
+                                    handled=TRUE; break;
+                                case CONSOLENG_BIND_NAVCENTER:
+                                case CONSOLENG_BIND_NAVOPENLINK:
+                                case CONSOLENG_BIND_NAVSELECTCHAR:
+                                case CONSOLENG_BIND_NAVSELECTLINE:
+                                case CONSOLENG_BIND_NAVSELECTBLOCK:
+                                case CONSOLENG_BIND_NAVSELECTSEMANTIC:
+                                case CONSOLENG_BIND_NAVLEFT:
+                                case CONSOLENG_BIND_NAVRIGHT:
+                                case CONSOLENG_BIND_NAVUP:
+                                case CONSOLENG_BIND_NAVDOWN:
+                                case CONSOLENG_BIND_NAVFIRST:
+                                case CONSOLENG_BIND_NAVLAST:
+                                case CONSOLENG_BIND_NAVTOP:
+                                case CONSOLENG_BIND_NAVBOTTOM:
+                                case CONSOLENG_BIND_NAVWORDNEXT:
+                                case CONSOLENG_BIND_NAVWORDEND:
+                                case CONSOLENG_BIND_NAVWORDPREV:
+                                case CONSOLENG_BIND_NAVSEMANTICNEXT:
+                                case CONSOLENG_BIND_NAVSEMANTICEND:
+                                case CONSOLENG_BIND_NAVSEMANTICPREV:
+                                case CONSOLENG_BIND_NAVPARAGRAPHUP:
+                                case CONSOLENG_BIND_NAVPARAGRAPHDOWN:
+                                case CONSOLENG_BIND_NAVBRACKET:
+                                case CONSOLENG_BIND_NAVOCCUPIED:
+                                case CONSOLENG_BIND_NAVVIEWTOP:
+                                case CONSOLENG_BIND_NAVVIEWMIDDLE:
+                                case CONSOLENG_BIND_NAVVIEWBOTTOM:
+                                case CONSOLENG_BIND_NAVPAGEUP:
+                                case CONSOLENG_BIND_NAVPAGEDOWN:
+                                case CONSOLENG_BIND_NAVHALFUP:
+                                case CONSOLENG_BIND_NAVHALFDOWN:
+                                case CONSOLENG_BIND_NAVLINEUP:
+                                case CONSOLENG_BIND_NAVLINEDOWN:
+                                case CONSOLENG_BIND_NAVFINDFORWARD:
+                                case CONSOLENG_BIND_NAVFINDBACKWARD:
+                                case CONSOLENG_BIND_NAVTILLFORWARD:
+                                case CONSOLENG_BIND_NAVTILLBACKWARD:
+                                case CONSOLENG_BIND_NAVFINDREPEAT:
+                                case CONSOLENG_BIND_NAVFINDREVERSE:
+                                case CONSOLENG_BIND_NAVSEARCHFORWARD:
+                                case CONSOLENG_BIND_NAVSEARCHBACKWARD:
+                                case CONSOLENG_BIND_NAVSEEDFORWARD:
+                                case CONSOLENG_BIND_NAVSEEDBACKWARD:
+                                case CONSOLENG_BIND_NAVSEARCHNEXT:
+                                case CONSOLENG_BIND_NAVSEARCHPREVIOUS:
+                                    /* Navigation handles these before ordinary dispatch. */
+                                    handled=TRUE; break;
+                                case CONSOLENG_BIND_SELECTALL:
+                                    handled=Console_SelectAll(cdihmsg->unit); break;
+                                case CONSOLENG_BIND_FONTLARGER:
+                                case CONSOLENG_BIND_FONTSMALLER:
+                                case CONSOLENG_BIND_FONTRESET:
+                                    {
+                                        IPTR zoom = action;
+                                        Console_DoCommand(cdihmsg->unit,C_ZOOM_FONT,1,&zoom);
+                                        handled=TRUE;
+                                    }
+                                    break;
+                                case CONSOLENG_BIND_LINEUP:
+                                case CONSOLENG_BIND_LINEDOWN:
+                                case CONSOLENG_BIND_HALFUP:
+                                case CONSOLENG_BIND_HALFDOWN:
+                                case CONSOLENG_BIND_PAGEUP:
+                                case CONSOLENG_BIND_PAGEDOWN:
+                                case CONSOLENG_BIND_TOP:
+                                case CONSOLENG_BIND_BOTTOM:
+                                case CONSOLENG_BIND_CLEARHISTORY:
+                                case CONSOLENG_BIND_CLEARSELECTION:
+                                    handled=Console_HistoryAction(cdihmsg->unit, action); break;
+                                }
+                                if (handled) {
+                                    con_binding_hold(held, &cdihmsg->ie);
+                                    original[code]=action;
+                                    break; /* Never encode a locally handled shortcut. */
+                                }
+                            }
+
+                            if (report_alternate_scroll(cdihmsg->unit, &cdihmsg->ie, ConsoleDevice))
+                                break;
+
+                            /* Native history is vertical. Unhandled horizontal
+                             * wheel events must not become application keys. */
+                            if (cdihmsg->ie.ie_Code == RAWKEY_NM_WHEEL_LEFT ||
+                                cdihmsg->ie.ie_Code == RAWKEY_NM_WHEEL_RIGHT)
                                 break;
 
                             /* Mouse wheel support */
@@ -340,34 +719,22 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                                         RawKeyConvert(&cdihmsg->ie,
                                         inputBuf, MAPRAWKEY_BUFSIZE, NULL);
 
-                                    if (cdihmsg->ie.ie_Qualifier ==
-                                        IEQUALIFIER_RCOMMAND && actual == 1)
-                                    {
-                                        switch (inputBuf[0])
-                                        {
-                                        case 'c':
-                                            D(bug("Console_Copy\n"));
-                                            Console_Copy(cdihmsg->unit);
-                                            actual = 0;
-                                            break;
-                                        case 'v':
-                                            D(bug("Console_Paste\n"));
-                                            Console_Paste(cdihmsg->unit);
-                                            /* We have likely put something
-                                             * into the input buffer */
-                                            if (ICU(cdihmsg->unit)->
-                                                numStoredChars)
-                                                answer_requests(cdihmsg->
-                                                    unit, ConsoleDevice);
-                                            actual = 0;
-                                            break;
-                                        }
-                                    }
+
                                 }
 
                                 D(bug("RawKeyConvert returned %ld\n",
                                         actual));
 
+
+                                actual = con_modified_navigation(inputBuf, actual,
+                                    &cdihmsg->ie, CON_IS_UTF8(cdihmsg->unit));
+
+                                actual = con_application_cursor(inputBuf, actual,
+                                    ICU(cdihmsg->unit)->conFlags);
+
+                                LONG keyboard = con_keyboard_event(CU(cdihmsg->unit),
+                                    &cdihmsg->ie, inputBuf, ConsoleDevice);
+                                if (keyboard >= 0) actual = keyboard;
 
                                 if (actual > 0
                                     && CON_IS_UTF8(cdihmsg->unit))
@@ -375,7 +742,7 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                                     /* Expand keymap output (Latin-1 bytes)
                                      * to UTF-8 so apps in UTF-8 mode see a
                                      * consistent encoding on input too. */
-                                    UBYTE utfBuf[MAPRAWKEY_BUFSIZE * 2 + 1];
+                                    UBYTE utfBuf[KEYINPUT_BUFSIZE * 2 + 1];
                                     LONG i, outlen = 0;
 
                                     for (i = 0; i < actual; i++)
@@ -407,8 +774,8 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                                     }
 
                                     memcpy(inputBuf, utfBuf,
-                                        MIN(outlen, MAPRAWKEY_BUFSIZE));
-                                    actual = MIN(outlen, MAPRAWKEY_BUFSIZE);
+                                        MIN(outlen, KEYINPUT_BUFSIZE));
+                                    actual = MIN(outlen, KEYINPUT_BUFSIZE);
                                 }
 
                                 if (actual > 0)
@@ -448,8 +815,12 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
 
                     case IECLASS_GADGETDOWN:
                     case IECLASS_GADGETUP:
-                    case IECLASS_TIMER:
                     case IECLASS_RAWMOUSE:
+                        if (!mouseEvent)
+                            Console_HandleGadgets(cdihmsg->unit, &(cdihmsg->ie));
+                        break;
+
+                    case IECLASS_TIMER:
                     case IECLASS_ACTIVEWINDOW:
                     case IECLASS_INACTIVEWINDOW:
                         Console_HandleGadgets(cdihmsg->unit,
@@ -477,7 +848,7 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
                         D(bug("cdihmsg->ie.ie_Class = %d\n",
                                 cdihmsg->ie.ie_Class));
                     } /* switch(cdihmsg->ie.ie_Class) */
-                } /* if (checkconunit(cdihmsg->unit, ConsoleDevice)) */
+                } /* if (checkconunit(cdihmsg->unit, cdihmsg->unitGeneration, ConsoleDevice)) */
 
                 /* The input handler sent this asynchronously (it must never
                    wait for us, see CDInputHandler); we own the message. */
@@ -524,6 +895,11 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
         } /* if (wakeupsig & commandsig) */
 
         ReleaseSemaphore(&ConsoleDevice->consoleTaskLock);
+
+        /* Native visual bell, outside console and drawing locks. NULL asks
+         * Intuition to resolve its live screens, avoiding stale window data. */
+        if (wakeupsig & SIGBREAKF_CTRL_E)
+            DisplayBeep(NULL);
     } /* forever */
 
 /* FIXME: Do cleanup here */
@@ -531,8 +907,9 @@ VOID consoleTaskEntry(struct ConsoleBase *ConsoleDevice)
 
 /********** checkconunit()  *******************************/
 
-/* Checks that the supplied unit has not been disposed */
-static BOOL checkconunit(Object *unit, struct ConsoleBase *ConsoleDevice)
+/* Compare only against live objects: the queued address may have been freed
+ * and reused. The generation is immutable for each published lifetime. */
+static BOOL checkconunit(Object *unit, UQUAD generation, struct ConsoleBase *ConsoleDevice)
 {
     Object *o, *ostate;
     BOOL found = FALSE;
@@ -542,7 +919,7 @@ static BOOL checkconunit(Object *unit, struct ConsoleBase *ConsoleDevice)
     ostate = (Object *) ConsoleDevice->unitList.mlh_Head;
     while ((o = NextObject(&ostate)) && (!found))
     {
-        if (o == unit)
+        if (o == unit && ICU(o)->inputGeneration == generation)
         {
             found = TRUE;
         }
