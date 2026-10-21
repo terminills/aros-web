@@ -75,6 +75,32 @@ cp -f "$PRESETS/Applications/Internet.info" "$PKG/files/Applications/Internet.in
 "$ILBMTOICON" "$THEME/ChromiumDrawer.info.src" "$THEME/Chromium.png" \
     "$PKG/files/Applications/Internet/Chromium.info"
 
+# Second launcher: the same switches under SMP-AnyCPU, which gives the
+# browser and every thread it creates an any-CPU affinity instead of the
+# Workbench CPU. A script started by C:IconX, because a TOOL icon can only
+# start its own binary. The switches come from the tool icon's active
+# CHROME_ARG tooltypes, so the two icons cannot drift apart.
+ANYCPU="$APP/Chromium All CPUs"
+ARGS=$(sed -n 's/^TOOLTYPE = "CHROME_ARG=\(.*\)"$/\1/p' "$THEME/Chromium.info.src" |
+  while IFS= read -r arg; do
+    case $arg in *' '*) printf '"%s" ' "$arg" ;; *) printf '%s ' "$arg" ;; esac
+  done)
+{
+  echo '; Copyright (C) 2026, The AROS Development Team. All rights reserved.'
+  echo '; Launched by C:IconX from the Workbench icon next to this script:'
+  echo '; Chromium with the tool icon'"'"'s switches, its threads free to run on'
+  echo '; every CPU (SMP-AnyCPU) instead of only the one Workbench runs on.'
+  echo 'FailAt 21'
+  echo 'Stack 10485760'
+  echo 'If EXISTS SYS:Developer/Debug/Tests/smp/SMP-AnyCPU'
+  echo "  SYS:Developer/Debug/Tests/smp/SMP-AnyCPU Run >NIL: SYS:Applications/Internet/Chromium/Chromium ${ARGS% }"
+  echo 'Else'
+  echo "  Run >NIL: SYS:Applications/Internet/Chromium/Chromium ${ARGS% }"
+  echo 'EndIf'
+} > "$ANYCPU"
+chmod 644 "$ANYCPU"
+"$ILBMTOICON" "$THEME/ChromiumAnyCPU.info.src" "$THEME/Chromium.png" "$ANYCPU.info"
+
 # --- the browser and its resources ----------------------------------------
 if [[ ${NO_STRIP:-0} == 1 ]]; then
   cp -f "$OUT_DIR/chrome" "$APP/Chromium"

@@ -1,4 +1,6 @@
+# Source commit IDs; replayed patches preserve trees but create new commit IDs.
 # repository (relative to CHROMIUM_SRC)  commit
-. 667a1b66d03edd7ac7110c7f1012e765dc35940d
-v8 c1f34904ccee1f14e8e7ec680c50be39cc911ae7
+. c15a9e09b9e810ea1510f3365461b1ce07ada533
+v8 6d2e20ee4379f38b94e7aa6423cfd78e727f1764
 cef 5f6580c6aac786620abf718922cf65f1503be15c
+third_party/angle 81316a00f2f8a6db80b48a196cc2344bbc33fa6d

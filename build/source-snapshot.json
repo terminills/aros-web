@@ -1,0 +1,9 @@
+{
+  "date": "2026-10-21",
+  "aros_web_source_commit": "dd40e6dbac1c48c581ff27397ecbc80e3d861983",
+  "build_tooling_source_commit": "aa9bddd5dd80d14658c24b719eb77660f452efb7",
+  "chromium_source_commit": "c15a9e09b9e810ea1510f3365461b1ce07ada533",
+  "chromium_patch_repository": "https://github.com/terminills/chromium-aros-patches",
+  "validation": "Source publication; native camera validation details in docs/status.md. Not a new whole-stack build.",
+  "chromium_patch_queue_commit": "d77e7a3f2e1b6c6cc6f6c71a0eb44438f524d4c8"
+}

@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8"><title>AROS camera and microphone validation</title>
+<style>body{font:18px sans-serif;background:#20252b;color:#eee;margin:24px}video{width:640px;max-width:100%;background:#000}button,select{font:inherit;padding:8px;margin:6px}pre{white-space:pre-wrap}meter{width:240px}</style>
+<h1>AROS camera and microphone</h1>
+<p>Local preview only. No recording or upload.</p>
+<label>Camera <select id="camera"></select></label><label>Microphone <select id="mic"></select></label>
+<p><button id="refresh">Refresh devices</button><button id="start">Start both</button><button id="stop">Stop</button></p>
+<video id="preview" muted autoplay playsinline></video><p>Microphone <meter id="level" min="0" max="1" value="0"></meter></p><pre id="status"></pre>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+let stream,context,timer,frameToken,frames=0,startTime;
+window.results={events:[]};
+function log(event,data={}){results.events.push({event,time:performance.now(),...data});$('status').textContent=JSON.stringify(results,null,2);}
+async function enumerate(){const devices=await navigator.mediaDevices.enumerateDevices();for(const [id,kind] of [['camera','videoinput'],['mic','audioinput']]){const old=$(id).value;$(id).replaceChildren();for(const d of devices.filter(d=>d.kind===kind))$(id).add(new Option(d.label||`${kind} ${$(id).length+1}`,d.deviceId));if([...$(id).options].some(o=>o.value===old))$(id).value=old;}log('devices',{devices:devices.map(({kind,label,deviceId})=>({kind,label,deviceId}))});return devices;}
+async function stop(){clearInterval(timer);if(frameToken&&$('preview').cancelVideoFrameCallback)$('preview').cancelVideoFrameCallback(frameToken);const tracks=stream?.getTracks()||[];tracks.forEach(t=>t.stop());$('preview').srcObject=null;stream=null;if(context){await context.close();context=null;}$('level').value=0;log('stopped',{tracks:tracks.map(t=>({kind:t.kind,state:t.readyState})),frames});}
+async function start(){await stop();frames=0;results.frames=0;results.maxAudioRms=0;const video=$('camera').value?{deviceId:{exact:$('camera').value}}:true;const audio=$('mic').value?{deviceId:{exact:$('mic').value},echoCancellation:false,noiseSuppression:false,autoGainControl:false}:true;stream=await navigator.mediaDevices.getUserMedia({video,audio});$('preview').srcObject=stream;await $('preview').play();startTime=performance.now();log('started',{tracks:stream.getTracks().map(t=>({kind:t.kind,label:t.label,state:t.readyState,settings:t.getSettings()}))});await enumerate();context=new AudioContext();await context.resume();const source=context.createMediaStreamSource(stream),analyser=context.createAnalyser();analyser.fftSize=2048;source.connect(analyser);const silent=context.createGain();silent.gain.value=0;analyser.connect(silent);silent.connect(context.destination);const samples=new Float32Array(analyser.fftSize);function frame(){frames++;results.frames=frames;if(stream)frameToken=$('preview').requestVideoFrameCallback(frame);}if($('preview').requestVideoFrameCallback)frameToken=$('preview').requestVideoFrameCallback(frame);timer=setInterval(()=>{analyser.getFloatTimeDomainData(samples);const rms=Math.sqrt(samples.reduce((s,x)=>s+x*x,0)/samples.length);results.audioRms=rms;results.audioSamples=(results.audioSamples||0)+1;results.maxAudioRms=Math.max(results.maxAudioRms,rms);results.elapsedSeconds=(performance.now()-startTime)/1000;results.videoSize=[$('preview').videoWidth,$('preview').videoHeight];$('level').value=Math.min(1,rms*10);$('status').textContent=JSON.stringify(results,null,2);},250);stream.getTracks().forEach(t=>t.addEventListener('ended',()=>log('ended',{kind:t.kind,label:t.label})));}
+for(const [id,fn]of[['start',start],['stop',stop],['refresh',enumerate]])$(id).onclick=()=>fn().catch(e=>log('error',{name:e.name,message:e.message}));
+window.captureTest={start,stop,enumerate};
+enumerate().catch(e=>log('error',{name:e.name,message:e.message}));
+</script>
