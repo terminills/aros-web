@@ -62,6 +62,14 @@ Run `SYS:Prefs/ConsoleNG` for the editor. The package startup restores saved
 future-console defaults through the OS's `ENV:`/`ENVARC:` assignments. A read-only
 Live CD cannot save to a read-only `ENVARC:`; Use still applies session defaults.
 
+## Multi-window fix included here
+
+The [core companion patch](core-patches/README.md) in this repository fixes
+independent `CONNG:` opens sharing one window. Apply it to your matching AROS
+source and rebuild/install the core handler as described there. The device
+alone cannot change handler ownership; the required patch is now included
+here rather than available only through the upstream PR.
+
 ## Source provenance and dependencies
 
 Published from the committed aros-web-layout development subtree at
