@@ -24,6 +24,19 @@
 #define CD_ASKTITLE             (CMD_NONSTD + 4)
 #endif
 
+/* Capability query answered for the standard con-handler; normally from
+ * <devices/console.h>, defined here for SDKs that predate it. */
+#ifndef CD_GETCAPS
+#define CD_GETCAPS              (CMD_NONSTD + 0x80)
+#define CD_GETPASTEMODE         (CMD_NONSTD + 0x81)
+#define CONCAPF_OWNWINDOW       (1 << 0)
+#define CONCAPF_STREAMREADS     (1 << 1)
+#define CONCAPF_CSI7            (1 << 2)
+#define CONCAPF_PASTEREQUEST    (1 << 3)
+#define CONCAPF_BRACKETEDPASTE  (1 << 4)
+#define CONCAPF_LINEREADS       (1 << 5)
+#endif
+
 /* Per-unit settings for a native preferences editor. GET ignores input bytes;
  * SET validates a complete v1 record before changing anything. io_Length is
  * capacity, io_Actual is the record size on success and zero on rejection.
@@ -114,8 +127,10 @@ struct ConsolengDefaultProfile
 #define CD_SETTHEMEPROFILE (CMD_NONSTD + 24)
 /* Read-only per-unit negotiated paste mode, returned as one ULONG (0 or 1).
  * Handlers use this when accepting clipboard text; older devices return NOCMD.
- * io_Actual is sizeof(ULONG) on success. Not a preference or library default. */
-#define CD_GETPASTEMODE (CMD_NONSTD + 25)
+ * io_Actual is sizeof(ULONG) on success. Not a preference or library default.
+ * Answered as CD_GETPASTEMODE from <devices/console.h> and under the number
+ * this device used before that existed. */
+#define CONSOLENG_GETPASTEMODE_V1 (CMD_NONSTD + 25)
 #define CONSOLENG_COLOR_COUNT 18
 #define CONSOLENG_COLOR_MASK 0x3ffffUL
 struct ConsolengColorPrefs {

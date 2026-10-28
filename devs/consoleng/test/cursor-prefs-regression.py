@@ -5,7 +5,7 @@ import subprocess,tempfile
 r=Path(__file__).resolve().parents[1];s=(r/'console.c').read_text();h=(r/'include/consoleng.h').read_text()
 header=h[h.index('#define CD_GETCURSORPREFS'):h.index('#endif /* DEVICES_CONSOLENG_H */')]
 a=s.index('static BOOL ConsolengValidCursorPrefs(');b=s.index('static int GM_UNIQUENAME(Init)',a);validator=s[a:b]
-a=s.index('    case CD_GETCURSORPREFS:');b=s.index('    case CD_GETGEOMETRY:',a);body=s[a:b]
+a=s.index('    case CD_GETCURSORPREFS:');b=s.index('    case CD_GETCAPS:',a);body=s[a:b]
 prefix=r'''
 #include <assert.h>
 #include <stdint.h>

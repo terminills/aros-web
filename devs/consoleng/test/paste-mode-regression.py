@@ -3,7 +3,7 @@
 from pathlib import Path
 import subprocess,tempfile,re
 r=Path(__file__).resolve().parents[1];s=(r/'console.c').read_text();h=(r/'include/consoleng.h').read_text()
-assert '#define CD_GETPASTEMODE (CMD_NONSTD + 25)' in h
+assert '#define CONSOLENG_GETPASTEMODE_V1 (CMD_NONSTD + 25)' in h
 body=s[s.index('    case CD_GETPASTEMODE:'):s.index('    case CD_GETCOLORPREFS:')]
 code=r'''
 #include <assert.h>
