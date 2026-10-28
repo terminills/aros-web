@@ -62,13 +62,23 @@ Run `SYS:Prefs/ConsoleNG` for the editor. The package startup restores saved
 future-console defaults through the OS's `ENV:`/`ENVARC:` assignments. A read-only
 Live CD cannot save to a read-only `ENVARC:`; Use still applies session defaults.
 
-## Multi-window fix included here
+## Core handler
 
-The [core companion patch](core-patches/README.md) in this repository fixes
-independent `CONNG:` opens sharing one window. Apply it to your matching AROS
-source and rebuild/install the core handler as described there. The device
-alone cannot change handler ownership; the required patch is now included
-here rather than available only through the upstream PR.
+Independent `CONNG:` opens, ConsoleNG paste and line handling need a
+con-handler that asks the device for its capabilities
+([aros-development-team/AROS#1923](https://github.com/aros-development-team/AROS/pull/1923)),
+an aux-handler that passes the device startup unmasked
+([#1912](https://github.com/aros-development-team/AROS/pull/1912), merged), and
+ConClip 42.4 for whole-clip paste
+([#1909](https://github.com/aros-development-team/AROS/pull/1909)).
+The device names no core files; it answers `CD_GETCAPS`.
+
+Mixing versions is safe. The capability commands sit above every command this
+device has, so its command numbers and the Prefs editor are unchanged and need
+no rebuild. An older con-handler does not ask, and treats `CONNG:` as it did
+before. An older consoleng.device answers the new commands with `IOERR_NOCMD`,
+which a newer con-handler takes as no capabilities: the console works, but
+independent windows, raw paste and bracketed paste need this version.
 
 ## Source provenance and dependencies
 

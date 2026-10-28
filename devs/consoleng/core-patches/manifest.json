@@ -1,9 +1,0 @@
-{
-  "source_commit": "eb85204091cb816e36e0c71de48fbeb79ab26e34",
-  "public_commit": "4fd9618699101fa6425146d7d0c0eb7767fe23cf",
-  "tested_public_base": "a9b44025d59ae4bf7e658a9cc806bffb6e81c979",
-  "path": "rom/filesys/console_handler/con_handler.c",
-  "patch_sha256": "7026513243f235bb172812a5140f3e6d0a220978077064f0ec52d8f839d33a77",
-  "result_sha256": "449c2ef0787ac498fbe7e60bf9b42827477b2e1731b4d90b2234a609255ef2c7",
-  "verification": "Applied to public base in isolated index; resulting con_handler.c byte-identical to the source-owner fix."
-}
