@@ -1,7 +1,7 @@
 /* Copyright (C) 2026, The AROS Development Team. All rights reserved. */
 #include <proto/exec.h>
 #include <intuition/sghooks.h>
-#include <dos/conclip.h>
+#include "conclip_text.h"
 #include <string.h>
 #include "console_gcc.h"
 

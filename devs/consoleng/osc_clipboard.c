@@ -2,7 +2,7 @@
 #include <proto/exec.h>
 #include <utility/hooks.h>
 #include <intuition/sghooks.h>
-#include <dos/conclip.h>
+#include "conclip_text.h"
 #include <string.h>
 #include "console_gcc.h"
 
