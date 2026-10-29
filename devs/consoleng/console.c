@@ -64,6 +64,7 @@ static const UWORD SupportedCommands[] = {
     CMD_WRITE,
     NSCMD_DEVICEQUERY,
     CD_GETCAPS,
+    CD_GETGEOMETRY,
     CD_GETCURSORPREFS,
     CD_SETCURSORPREFS,
     CD_GETDEFAULTCURSORPREFS,
@@ -1616,6 +1617,38 @@ ADD2OPENDEV(GM_UNIQUENAME(Open), 0) ADD2CLOSEDEV(GM_UNIQUENAME(Close), 0)
                          CONCAPF_PASTEREQUEST | CONCAPF_BRACKETEDPASTE | CONCAPF_LINEREADS;
             CopyMem(&caps, ioreq->io_Data, sizeof(caps));
             ioreq->io_Actual = sizeof(caps);
+        }
+        break;
+
+    case CD_GETGEOMETRY:
+        if (!ioreq->io_Data || !ioreq->io_Unit ||
+            ioreq->io_Unit == (struct Unit *)CONU_LIBRARY)
+            error = IOERR_BADADDRESS;
+        else if (ioreq->io_Length < sizeof(struct ConsoleGeometry))
+            error = IOERR_BADLENGTH;
+        else
+        {
+            struct ConUnit *unit = (struct ConUnit *)ioreq->io_Unit;
+            struct ConsoleGeometry geometry;
+
+            /* The console task holds this lock while processing resize.
+               The open IO unit keeps the object alive during this query. */
+            ObtainSemaphore(&ConsoleDevice->consoleTaskLock);
+            geometry.cg_Size = sizeof(geometry);
+            geometry.cg_Version = CONSOLE_GEOMETRY_VERSION;
+            geometry.cg_Columns = unit->cu_XMax + 1;
+            geometry.cg_Rows = unit->cu_YMax + 1;
+            geometry.cg_Width = geometry.cg_Columns * unit->cu_XRSize;
+            geometry.cg_Height = geometry.cg_Rows * unit->cu_YRSize;
+            if (unit->cu_XMax < 0 || unit->cu_YMax < 0 ||
+                unit->cu_XRSize <= 0 || unit->cu_YRSize <= 0)
+                error = IOERR_BADADDRESS;
+            ReleaseSemaphore(&ConsoleDevice->consoleTaskLock);
+            if (!error)
+            {
+                CopyMem(&geometry, ioreq->io_Data, sizeof(geometry));
+                ioreq->io_Actual = sizeof(geometry);
+            }
         }
         break;
 

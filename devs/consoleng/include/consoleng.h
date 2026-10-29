@@ -24,6 +24,24 @@
 #define CD_ASKTITLE             (CMD_NONSTD + 4)
 #endif
 
+/* Copied geometry query of the alpha18 con-handler (its <dos/consoleinfo.h>),
+   kept so that handler's TIOCGWINSZ still works with a newer device. */
+#ifndef DOS_CONSOLEINFO_H
+#define DOS_CONSOLEINFO_H
+#define ACTION_CONSOLE_GETGEOMETRY 0x434f4e47L /* CONG */
+#define CONSOLE_GEOMETRY_VERSION 1
+#define CD_GETGEOMETRY          (CMD_NONSTD + 5)
+struct ConsoleGeometry
+{
+    ULONG cg_Size;
+    ULONG cg_Version;
+    ULONG cg_Columns;
+    ULONG cg_Rows;
+    ULONG cg_Width;  /* pixels occupied by complete character cells */
+    ULONG cg_Height;
+};
+#endif
+
 /* Capability query answered for the standard con-handler; normally from
  * <devices/console.h>, defined here for SDKs that predate it. */
 #ifndef CD_GETCAPS

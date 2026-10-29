@@ -79,6 +79,10 @@ no rebuild. An older con-handler does not ask, and treats `CONNG:` as it did
 before. An older consoleng.device answers the new commands with `IOERR_NOCMD`,
 which a newer con-handler takes as no capabilities: the console works, but
 independent windows, raw paste and bracketed paste need this version.
+The device still answers the alpha18 con-handler's copied geometry query
+(`CD_GETGEOMETRY`), so that handler's TIOCGWINSZ keeps working with this
+device; the upstream handler uses the window size report instead
+([#1920](https://github.com/aros-development-team/AROS/pull/1920)).
 
 ## Source provenance and dependencies
 
