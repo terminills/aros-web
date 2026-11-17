@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include <exec/libraries.h>
-#include <proto/cef.h>
+#include <libraries/cef_client.h>
 #include <proto/debug.h>
 #include <proto/dos.h>
 #include <proto/exec.h>

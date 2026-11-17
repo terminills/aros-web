@@ -11,7 +11,7 @@
 #include <exec/libraries.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
-#include <proto/cef.h>
+#include <libraries/cef_client.h>
 #include <proto/v8.h>
 #include <proto/cybergraphics.h>
 #include <proto/debug.h>

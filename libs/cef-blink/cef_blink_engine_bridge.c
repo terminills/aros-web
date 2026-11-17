@@ -348,7 +348,7 @@ AROS_LH1(void, CEFBlinkStringUserfreeFree,
     AROS_LIBFUNC_EXIT
 }
 
-AROS_LH2(CONST_STRPTR, CEFBlinkApiHash,
+AROS_LH2(const char *, CEFBlinkApiHash,
     AROS_LHA(LONG, version, D0),
     AROS_LHA(LONG, entry, D1),
     LIBBASETYPEPTR, LIBBASE, 21, CEFBlink)
@@ -359,7 +359,7 @@ AROS_LH2(CONST_STRPTR, CEFBlinkApiHash,
     if (version != CEFBLINK_API_VERSION)
         return NULL;
     ObtainSemaphore(&LIBBASE->cb_EngineLock);
-    CONST_STRPTR hash = (CONST_STRPTR)cef_engine_api_hash((int)version, (int)entry);
+    const char *hash = cef_engine_api_hash((int)version, (int)entry);
     ReleaseSemaphore(&LIBBASE->cb_EngineLock);
     return hash;
     AROS_LIBFUNC_EXIT

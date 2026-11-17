@@ -25,7 +25,7 @@
 #include <intuition/intuition.h>
 #include <libraries/electron.h>
 #include <proto/asl.h>
-#include <proto/cef.h>
+#include <libraries/cef_client.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/intuition.h>

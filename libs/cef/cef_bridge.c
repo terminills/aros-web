@@ -207,7 +207,7 @@ AROS_LH1(void, CEFStringUserfreeFree,
     AROS_LIBFUNC_EXIT
 }
 
-AROS_LH2(CONST_STRPTR, cef_api_hash,
+AROS_LH2(const char *, cef_api_hash,
     AROS_LHA(LONG, version, D0),
     AROS_LHA(LONG, entry, D1),
     LIBBASETYPEPTR, LIBBASE, 21, CEF)

@@ -21,9 +21,9 @@ int main(void)
     LONG cef_commit;
     LONG chrome_major;
     LONG chrome_build;
-    CONST_STRPTR platform_hash;
-    CONST_STRPTR universal_hash;
-    CONST_STRPTR commit_hash;
+    const char *platform_hash;
+    const char *universal_hash;
+    const char *commit_hash;
     int result = RETURN_FAIL;
 
     KPrintF("[CEF-VERSION] open begin\n");
