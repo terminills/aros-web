@@ -72,10 +72,10 @@
     /* Remove from library's isolate list */
     ObtainSemaphore(&V8Base->v8_Semaphore);
     Remove((struct Node *)v8isolate);
-    ReleaseSemaphore(&V8Base->v8_Semaphore);
     
     /* Free the isolate */
     V8_FreeIsolate(V8Base, v8isolate);
+    ReleaseSemaphore(&V8Base->v8_Semaphore);
 
     AROS_LIBFUNC_EXIT
 }

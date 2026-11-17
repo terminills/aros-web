@@ -31,8 +31,9 @@
 
 /*  FUNCTION
         Cleans up the V8 JavaScript engine. Should be called when the
-        application is done using V8. After this call, V8Initialize()
-        must be called again before using any other V8 functions.
+        application has destroyed its isolates. If any application still has
+        live isolates, this call leaves the shared engine running. After an
+        actual shutdown, V8Initialize() is required before further use.
 
     INPUTS
         None
@@ -63,6 +64,14 @@
     AROS_LIBFUNC_INIT
 
     ObtainSemaphore(&V8Base->v8_Semaphore);
+
+    /* Isolates can belong to other applications sharing this resident image.
+       Their ArrayBuffer allocator and platform must remain alive. */
+    if (!IsListEmpty((struct List *)&V8Base->v8_Isolates))
+    {
+        ReleaseSemaphore(&V8Base->v8_Semaphore);
+        return;
+    }
     
     if (V8Base->v8_Initialized)
     {

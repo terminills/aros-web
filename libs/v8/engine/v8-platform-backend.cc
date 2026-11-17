@@ -114,6 +114,12 @@ bool AROSPlatformBackend::Initialize() {
     return false;
   }
   kprintf("[V8-BACKEND] timer_port_=%p\n", timer_port_);
+  // Only direct timer functions are used; this request is never submitted.
+  // Cleanup may run in another application, so retain no caller signal bit.
+  FreeSignal(timer_port_->mp_SigBit);
+  timer_port_->mp_SigBit = -1;
+  timer_port_->mp_Flags = PA_IGNORE;
+  timer_port_->mp_SigTask = nullptr;
   
   timer_io_ = (struct timerequest*)CreateIORequest(timer_port_, 
                                                    sizeof(struct timerequest));

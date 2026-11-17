@@ -75,6 +75,7 @@ bool AROSPlatform::InitializeAROSInterfaces() {
       FreeSignal(timer_port_->mp_SigBit);
       timer_port_->mp_SigBit = -1;
       timer_port_->mp_Flags = PA_IGNORE;
+      timer_port_->mp_SigTask = nullptr;
       timer_req_ = (struct timerequest*)CreateIORequest(timer_port_, sizeof(struct timerequest));
       if (timer_req_) {
         if (OpenDevice(TIMERNAME, UNIT_VBLANK, (struct IORequest*)timer_req_, 0) == 0) {

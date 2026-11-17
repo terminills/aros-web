@@ -63,22 +63,28 @@
     AROS_LIBFUNC_INIT
 
     struct V8Isolate *isolate;
+
+    /* Serialize creation with cleanup through registration in the live list. */
+    ObtainSemaphore(&V8Base->v8_Semaphore);
     
     /* Ensure V8 is initialized */
     if (!V8Base->v8_Initialized)
     {
-        V8Initialize();
+        if (!V8Initialize()) {
+            ReleaseSemaphore(&V8Base->v8_Semaphore);
+            return NULL;
+        }
     }
     
     /* Allocate internal isolate structure */
     isolate = V8_AllocIsolate(V8Base, V8F_ISOLATE_DEFAULT);
     if (!isolate)
     {
+        ReleaseSemaphore(&V8Base->v8_Semaphore);
         return NULL;
     }
     
     /* Add to library's isolate list */
-    ObtainSemaphore(&V8Base->v8_Semaphore);
     AddTail((struct List *)&V8Base->v8_Isolates, (struct Node *)isolate);
     ReleaseSemaphore(&V8Base->v8_Semaphore);
     
