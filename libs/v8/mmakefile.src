@@ -92,11 +92,17 @@ ifneq ($(wildcard $(V8_BUILDDIR)/libv8_monolith.a),)
     # them for strong references originating in the engulfed V8 monolith.
     # Engulf those small stubs explicitly; keep the actual C/math
     # implementations in the normal stdc.static dependency below.
+    ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
     USER_LDFLAGS += -L$(AROS_LIB) -Wl,--whole-archive -lstdc -Wl,--no-whole-archive
+    endif
     # USER_LDFLAGS alone does not let build_module discover this nonstandard
     # archive as an input. Keep the native module timestamp-correct whenever
     # Chromium's pinned monolith changes.
     USER_DEPLIBS += $(V8_LIBDIR)/libv8monolith.a
+    ifneq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+    USER_LDFLAGS += -Wl,@$(V8_LIBDIR)/v8-rust-libraries.rsp
+    USER_DEPLIBS += $(V8_LIBDIR)/v8-rust-libraries.rsp
+    endif
 else
     # V8 library not found - using Phase 2.2 stubs
     $(info V8: libv8_monolith.a not found, using Phase 2.2 stubs)
@@ -134,6 +140,17 @@ V8_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/engine
 V8_STUB_FILES := $(V8_ENGINE_DIR)/emutls-aros \
                  $(V8_ENGINE_DIR)/platform-context-aros
 V8_LEGACY_CXXFILES :=
+ifneq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+# Native Rust std glue from the Chromium 156 prerequisite port. Temporal's
+# Rust dependencies are linked from GN's exact archive closure below.
+V8_STUB_FILES += $(V8_ENGINE_DIR)/rust/aros_env_glue \
+                 $(V8_ENGINE_DIR)/rust/aros_fs_glue \
+                 $(V8_ENGINE_DIR)/rust/aros_net_glue \
+                 $(V8_ENGINE_DIR)/rust/aros_process_glue \
+                 $(V8_ENGINE_DIR)/rust/aros_sync_glue \
+                 $(V8_ENGINE_DIR)/rust/aros_thread_glue \
+                 $(V8_ENGINE_DIR)/rust/library_args
+endif
 ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 V8_STUB_FILES += $(V8_ENGINE_DIR)/glibc-stubs-aros \
                  $(V8_ENGINE_DIR)/pthread-abi-aros
@@ -155,6 +172,9 @@ V8_PLATFORM_CXXFILES := $(V8_PLATFORM_DIR)/isolate-aros \
 # Match the Chromium 156 C++23 language level.
 # CRITICAL: Match V8 monolith build flags to prevent GOT relocations
 USER_CFLAGS := -fno-pic -fno-PIE
+ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+USER_CFLAGS += -DV8_LEGACY_GLIBC_ABI
+endif
 USER_CXXFLAGS := -std=c++23 -fno-pic -fno-PIE -I$(V8_ENGINE_DIR)
 USER_INCLUDES := -I$(V8_ENGINE_DIR)
 
@@ -197,6 +217,12 @@ ifeq ($(V8_USE_REAL_ENGINE),yes)
 # Use pre-built monolith — skip external-v8-build (V8 source build)
 #MM workbench-libs-v8-linklib-v8monolith-real :
 workbench-libs-v8-linklib-v8monolith-real: $(V8_LIBDIR)/libv8monolith.a
+ifneq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+workbench-libs-v8-linklib-v8monolith-real: $(V8_LIBDIR)/v8-rust-libraries.rsp
+
+$(V8_LIBDIR)/v8-rust-libraries.rsp: $(V8_BUILDDIR)/libv8_monolith.a $(SRCDIR)/$(CURDIR)/../../build/v8-rust-libraries.py
+	python3 $(SRCDIR)/$(CURDIR)/../../build/v8-rust-libraries.py $(V8_OUTPUT) $@
+endif
 
 $(V8_LIBDIR)/libv8monolith.a: $(V8_BUILDDIR)/libv8_monolith.a
 	@$(ECHO) "Installing V8 monolithic library to $(V8_LIBDIR)..."

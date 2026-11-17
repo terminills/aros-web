@@ -22,8 +22,10 @@
 /****************************************************************************/
 
 /* From glibc-stubs-aros.c — timer init/cleanup for per-task-lib bypass */
+#ifdef V8_LEGACY_GLIBC_ABI
 extern void v8_init_timer(void);
 extern void v8_cleanup_timer(void);
+#endif
 
 static int V8_InitLib(LIBBASETYPEPTR V8Base)
 {
@@ -43,7 +45,9 @@ static int V8_InitLib(LIBBASETYPEPTR V8Base)
 
     /* Open timer.device once so worker threads can call clock_gettime
      * without their own PosixCBase (per-task-lib bypass) */
+#ifdef V8_LEGACY_GLIBC_ABI
     v8_init_timer();
+#endif
     
     return TRUE;
 }
@@ -59,7 +63,9 @@ static int V8_ExpungeLib(LIBBASETYPEPTR V8Base)
     }
     
     /* Close global timer.device */
+#ifdef V8_LEGACY_GLIBC_ABI
     v8_cleanup_timer();
+#endif
 
     /* Clean up any remaining isolates (should not happen in normal operation) */
     struct V8Isolate *isolate, *nextIsolate;

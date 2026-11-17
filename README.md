@@ -6,9 +6,26 @@ AROS desktop.
 
 This repository contains the AROS libraries and adapters. The Chromium engine
 port lives in [chromium-aros-patches](https://github.com/terminills/chromium-aros-patches)
-as patch queues for Chromium **124.0.6367.0** and its dependencies. Node is
-**22.23.1**. These are the current source versions, not claims to track the
-latest upstream releases.
+with an in-progress **Chromium 156.0.8078.96 / CEF 8078** migration on
+`chromium-156-aros-cef`. Use its `upgrade/156/snapshot` queue and this branch's
+`build/chromium.pin`; the companion repository's root queues retain Chromium
+124. Node remains **22.23.1** and its integration with the upgraded engine is
+not yet validated.
+
+The native x86-64 V8 library builds with GCC 16 and Binutils 2.47. A native
+AROS QEMU probe passes JavaScript execution, separate globals in two isolates,
+and continued execution after the other isolate is destroyed. Full CEF builds,
+browser/profile isolation, graphics and Widevine runtime validation remain
+in progress. This branch is not a finished browser release.
+
+For the standalone V8 archive, copy `build/v8-native156.args.gn` to the owned
+Chromium checkout's `out/aros-v8-library156/args.gn` and set its toolchain and SDK
+paths. Generate with GN and build `v8_monolith`. Keep the allocator settings in
+that file: `v8.library` owns the cross-library allocation seam. Build the native
+module with `make CHROMIUM_SRC=/path/to/src workbench-libs-v8` in the AROS build.
+The module build includes GN's exact Rust archive closure and the matching
+native Rust std glue, including Temporal. `WEB_ENGINE_LEGACY_GLIBC_ABI` defaults
+to `no`; the old glibc/pthread emulation must not be mixed with native SDK types.
 
 ## Components
 

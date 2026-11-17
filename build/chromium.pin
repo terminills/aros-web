@@ -1,6 +1,7 @@
-# Source commit IDs; replayed patches preserve trees but create new commit IDs.
+# Chromium 156 upstream bases; apply the matching chromium-aros-patches
+# upgrade/156/snapshot queue. This migration is not yet release validated.
 # repository (relative to CHROMIUM_SRC)  commit
-. c15a9e09b9e810ea1510f3365461b1ce07ada533
-v8 6d2e20ee4379f38b94e7aa6423cfd78e727f1764
-cef 5f6580c6aac786620abf718922cf65f1503be15c
-third_party/angle 81316a00f2f8a6db80b48a196cc2344bbc33fa6d
+. 2ad9b7f5a86846e0b264090723a6a78964bb84c4
+v8 6500240d220d9eaba51ea0012f60e926fe4b6472
+cef 6028375a4532fb89d23b58635f5c0d3a82c93959
+third_party/angle f10470c77e4810ece55cbe8e08469a31610e92f4
