@@ -13,9 +13,16 @@ CEF_SOURCE ?= $(CHROMIUM_SRC)
 # The complete archive must use the same native SDK/compiler as this module.
 CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef156
 CEF_ARCHIVE := $(CEF_OUTPUT)/obj/cef/libcef.a
+CEF_RUST_LIBRARIES := $(GENDIR)/$(CURDIR)/linklibs/cef-rust-libraries.rsp
 
 USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
     -Wl,--whole-archive $(CEF_ARCHIVE) -Wl,--no-whole-archive
+
+ifneq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+# GN's complete C++ archive leaves its Rust rlib closure on the link edge.
+USER_LDFLAGS += -Wl,@$(CEF_RUST_LIBRARIES)
+USER_DEPLIBS += $(CEF_RUST_LIBRARIES)
+endif
 
 ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 # Chromium embeds glibc-sized synchronization objects.  Redirect their ABI to
@@ -49,6 +56,14 @@ CEF_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/../v8/engine
 CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/emutls-aros
 ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 CEF_INTERPOSERS += $(CEF_ENGINE_DIR)/pthread-abi-aros
+else
+CEF_INTERPOSERS += $(CEF_ENGINE_DIR)/rust/aros_env_glue \
+    $(CEF_ENGINE_DIR)/rust/aros_fs_glue \
+    $(CEF_ENGINE_DIR)/rust/aros_net_glue \
+    $(CEF_ENGINE_DIR)/rust/aros_process_glue \
+    $(CEF_ENGINE_DIR)/rust/aros_sync_glue \
+    $(CEF_ENGINE_DIR)/rust/aros_thread_glue \
+    $(CEF_ENGINE_DIR)/rust/library_args
 endif
 
 # linuxso: base/native_library_aros.cc reaches the linuxso link library for
@@ -66,6 +81,13 @@ CEF_BLINK_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 #MM workbench-libs-cef-blink : workbench-libs-cef-blink-archive-check \
 #MM     workbench-libs-cef-blink-public-includes workbench-libs-v8
 #MM workbench-libs-cef-blink-archive-check
+ifneq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+workbench-libs-cef-blink-archive-check: $(CEF_RUST_LIBRARIES)
+
+$(CEF_RUST_LIBRARIES): $(CEF_ARCHIVE) $(SRCDIR)/$(CURDIR)/../../build/v8-rust-libraries.py
+	python3 $(SRCDIR)/$(CURDIR)/../../build/v8-rust-libraries.py $(CEF_OUTPUT) $@ obj/cef/libcef.a
+endif
+
 workbench-libs-cef-blink-archive-check:
 	@test -f "$(CEF_ARCHIVE)" || { \
 	    $(ECHO) "Missing CEF archive: $(CEF_ARCHIVE)"; \
