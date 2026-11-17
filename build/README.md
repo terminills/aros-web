@@ -98,3 +98,17 @@ toolchain digests and the external hosted tester before operating it.
 See [server notes](docs/build-server.md) and [artifact contract](docs/contract.md)
 for that pipeline's intended layout. Use the explicit native-browser workflow
 above for this source snapshot.
+
+
+## Chromium 156 native ABI branch
+
+This branch builds the resident engine with GCC 16.2 and native AROS SDK types.
+`WEB_ENGINE_LEGACY_GLIBC_ABI` defaults to `no`: the old Linux-sized pthread,
+clock/errno, and libstdc++ compatibility shims must not intercept native calls.
+Task-local emulated TLS and platform ownership remain enabled. Set the legacy
+option only when explicitly rebuilding an older engine made with glibc headers.
+
+The default engine outputs are `out/aros-v8-library156` and `out/aros-cef156`.
+Override `V8_OUTPUT` and `CEF_OUTPUT` for architecture-specific output directories.
+The V8 target fails if its matching monolith is absent instead of producing a
+stub-only library. Full Chromium 156 runtime validation remains in progress.

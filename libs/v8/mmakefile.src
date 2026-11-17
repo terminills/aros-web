@@ -5,6 +5,7 @@
 #
 
 include $(SRCDIR)/config/aros.cfg
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
 
 # Note: We do NOT use -static here because it prevents proper resolution
 # of AROS library base symbols. The AROS build system handles library
@@ -16,6 +17,8 @@ include $(SRCDIR)/config/aros.cfg
 # --wrap intercepts V8 functions that CHECK page alignment or page size —
 # AROS sections aren't page-aligned and C++ static locals may not init correctly
 # Also wraps OS::Abort to gracefully remove tasks instead of crashing system
+USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax
+ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
     -Wl,--wrap=_ZN2v84base2OS15SetDataReadOnlyEPvm \
     -Wl,--wrap=_ZN2v88internal15MemoryAllocator24InitializeOncePerProcessEv \
@@ -62,17 +65,14 @@ USER_LDFLAGS += \
     -Wl,--wrap=sem_init -Wl,--wrap=sem_destroy -Wl,--wrap=sem_post \
     -Wl,--wrap=sem_trywait -Wl,--wrap=sem_wait -Wl,--wrap=sem_timedwait
 
+endif
+
 # V8 Engine Configuration
 # Consume the exact monolith extracted from Chromium's pinned V8 checkout.
 # Keep these overridable for builders whose sibling checkout/output names differ.
-include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
 V8_SOURCE ?= $(CHROMIUM_SRC)
-# out/aros-v8-library-adt: built against this tree's ADT sysroot and
-# crosstools with dcheck_always_on=false.  Chromium's default for a
-# non-official build is dcheck_always_on=true, which v8/BUILD.gn turns into
-# a DEBUG V8 (DCHECKs, the register-allocator verifier, heap verification):
-# a single llhttp TurboFan tier-up took ~7 s on the main task with it.
-V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library-adt
+# Native AROS GCC 16 / Chromium 156 monolith; override for another architecture.
+V8_OUTPUT ?= $(V8_SOURCE)/out/aros-v8-library156
 V8_BUILDDIR := $(V8_OUTPUT)/obj/v8
 V8_INCLUDE := $(V8_SOURCE)/v8/include
 V8_GENERATED_INCLUDE := $(V8_OUTPUT)/gen/v8/include
@@ -131,10 +131,14 @@ FILES := v8_init v8_platform v8_simple_eval
 
 # glibc/pthread compatibility interposers proven with the AROS V8 wrapper.
 V8_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/engine
-V8_STUB_FILES := $(V8_ENGINE_DIR)/glibc-stubs-aros \
-                 $(V8_ENGINE_DIR)/emutls-aros \
-                 $(V8_ENGINE_DIR)/platform-context-aros \
+V8_STUB_FILES := $(V8_ENGINE_DIR)/emutls-aros \
+                 $(V8_ENGINE_DIR)/platform-context-aros
+V8_LEGACY_CXXFILES :=
+ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+V8_STUB_FILES += $(V8_ENGINE_DIR)/glibc-stubs-aros \
                  $(V8_ENGINE_DIR)/pthread-abi-aros
+V8_LEGACY_CXXFILES += std_fix
+endif
 
 # V8 Platform integration
 # These sources are owned by v8.library. NexOS was their bring-up playground,
@@ -148,10 +152,10 @@ V8_PLATFORM_CXXFILES := $(V8_PLATFORM_DIR)/isolate-aros \
                         $(V8_PLATFORM_DIR)/v8-embedder-helpers \
                         $(V8_PLATFORM_DIR)/v8-platform-backend
 
-# Add C++ compiler flags (C++20 required for V8 12.4+)
+# Match the Chromium 156 C++23 language level.
 # CRITICAL: Match V8 monolith build flags to prevent GOT relocations
 USER_CFLAGS := -fno-pic -fno-PIE
-USER_CXXFLAGS := -std=c++20 -fno-pic -fno-PIE -I$(V8_ENGINE_DIR)
+USER_CXXFLAGS := -std=c++23 -fno-pic -fno-PIE -I$(V8_ENGINE_DIR)
 USER_INCLUDES := -I$(V8_ENGINE_DIR)
 
 # Add V8 include directories and define V8_USE_REAL_ENGINE when V8 library is available
@@ -171,8 +175,16 @@ endif
 #MM     includes-copy
 
 #MM workbench-libs-v8 : \
+#MM     workbench-libs-v8-archive-check \
 #MM     linklibs \
 #MM     workbench-libs-v8-linklib-v8monolith
+
+#MM
+workbench-libs-v8-archive-check:
+	@test -f "$(V8_BUILDDIR)/libv8_monolith.a" || { \
+	    $(ECHO) "Missing matching V8 monolith: $(V8_BUILDDIR)/libv8_monolith.a"; \
+	    exit 1; \
+	}
 
 # Build linklib wrapper for V8 monolithic library
 # This allows the AROS build system to properly link the large V8 static library
@@ -207,7 +219,7 @@ workbench-libs-v8-linklib-v8monolith-stub:
     conffile=v8.conf \
     files="$(FILES) $(FUNCS) $(V8_STUB_FILES)" \
     uselibs="$(V8_USELIBS)" \
-    cxxfiles="v8_bridge std_fix v8_allocator $(V8_PLATFORM_CXXFILES)"
+    cxxfiles="v8_bridge $(V8_LEGACY_CXXFILES) v8_allocator $(V8_PLATFORM_CXXFILES)"
 
 # Copy include files to system includes
 INCLUDE_FILES := $(call WILDCARD, include/*.h)

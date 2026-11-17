@@ -26,3 +26,7 @@ $(foreach repo,. v8 cef,\
     $(warning Chromium $(repo) is at $(call chromium_head,$(repo)), not the pinned $(call chromium_pin,$(repo)) (build/chromium.pin))))
 endif
 endif
+
+# Chromium 156 uses the native AROS SDK and libstdc++ ABI. Enable only
+# when deliberately rebuilding a historical glibc-header engine.
+WEB_ENGINE_LEGACY_GLIBC_ABI ?= no

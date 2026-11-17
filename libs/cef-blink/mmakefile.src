@@ -10,21 +10,14 @@ include $(SRCDIR)/config/aros.cfg
 
 include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
 CEF_SOURCE ?= $(CHROMIUM_SRC)
-# out/aros-cef-bootstrap is built against an earlier, non-ADT sysroot
-# with that tree's own crosstools, so its
-# libcef.a is not a valid artifact for this tree: linking it here mixes two
-# toolchains' libstdc++ in one module, which is the ABI hazard that bakes
-# differing pthread_mutex_t/semaphore sizes into a single binary. The -adt
-# output is the same CEF configuration with only aros_sysroot and
-# aros_toolchain_root repointed at aros-adt-hosted-clean and
-# aros-adt-crosstools, matching what out/aros-chrome-adt-clean and
-# out/aros-v8-library-adt already do.
-CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef-bootstrap-adt
+# The complete archive must use the same native SDK/compiler as this module.
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef156
 CEF_ARCHIVE := $(CEF_OUTPUT)/obj/cef/libcef.a
 
 USER_LDFLAGS := -static-libstdc++ -Wl,--no-relax \
     -Wl,--whole-archive $(CEF_ARCHIVE) -Wl,--no-whole-archive
 
+ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 # Chromium embeds glibc-sized synchronization objects.  Redirect their ABI to
 # the proven out-of-line AROS implementations inside this module.
 USER_LDFLAGS += \
@@ -50,9 +43,13 @@ USER_LDFLAGS += \
     -Wl,--wrap=sem_init -Wl,--wrap=sem_destroy -Wl,--wrap=sem_post \
     -Wl,--wrap=sem_trywait -Wl,--wrap=sem_wait -Wl,--wrap=sem_timedwait
 
+endif
+
 CEF_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/../v8/engine
-CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/pthread-abi-aros \
-                   $(CEF_ENGINE_DIR)/emutls-aros
+CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/emutls-aros
+ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
+CEF_INTERPOSERS += $(CEF_ENGINE_DIR)/pthread-abi-aros
+endif
 
 # linuxso: base/native_library_aros.cc reaches the linuxso link library for
 # linuxso_open/linuxso_sym/linuxso_close, which is how the Widevine CDM is
