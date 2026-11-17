@@ -493,7 +493,7 @@ int V8Embedder::EvaluateScript(void* isolate_handle,
     }
     
     // Create script origin for better error messages
-    v8::ScriptOrigin origin(isolate, name);
+    v8::ScriptOrigin origin(name);
     
     // Compile the script
     v8::Local<v8::Script> compiled_script;
