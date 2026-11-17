@@ -14,9 +14,19 @@
 #include <exec/types.h>
 
 #define CEFNAME "cef.library"
-#define CEFVERSION 1
+#define CEFVERSION 2
+
+/* Shared by every client of this exact-build engine. */
+#define CEF_AROS_API_VERSION 15600
 
 /* CEFInitialize() result: the resident engine is already running. */
 #define CEF_INITIALIZE_ENGINE_RUNNING 2
+
+/* CEFCreateRequestContext takes cef_request_context_settings_t and an optional
+ * cef_request_context_handler_t from the pinned CEF headers. Use a distinct
+ * persistent cache_path per app/profile (beneath the engine root_cache_path),
+ * or an empty cache_path for an in-memory context. Pass the resulting context
+ * to CEFCreateBrowser and release its CEF reference when no longer needed.
+ * Context creation is available only while the shared engine is running. */
 
 #endif /* LIBRARIES_CEF_H */

@@ -50,7 +50,7 @@ CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 %build_prog mmake=workbench-libs-cef-test-lifecycle \
     progname=test_cef_lifecycle \
     files=test_cef_lifecycle \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     ldflags="$(TARGET_LDFLAGS)" \
     uselibs="cef debug"
 
@@ -58,7 +58,7 @@ CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 %build_prog mmake=workbench-libs-cef-test-browser \
     progname=test_cef_browser \
     files=test_cef_browser \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     ldflags="$(TARGET_LDFLAGS)" \
     uselibs="cef v8 cybergraphics graphics intuition dos exec debug"
 

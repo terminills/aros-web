@@ -36,7 +36,7 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     modname=electron modtype=library \
     conffile=electron.conf \
     files="electron_bridge electron_notify" \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE) $(CHROME_VERSION_DEFS)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE) $(CHROME_VERSION_DEFS)" \
     uselibs="node cef v8 intuition dos"
 
 #MM workbench-libs-electron-test : workbench-libs-electron
@@ -50,7 +50,7 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 %build_prog mmake=workbench-libs-electron-lifecycle-test \
     progname=ElectronLifecycleTest \
     files=test_electron_lifecycle \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     targetdir=$(AROS_C) \
     uselibs="electron v8 debug stdc"
 
@@ -58,7 +58,7 @@ ELECTRON_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 %build_prog mmake=workbench-libs-electron-context-test \
     progname=ElectronContextTest \
     files=test_electron_context \
-    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
     targetdir=$(AROS_C) \
     uselibs="electron debug dos stdc"
 

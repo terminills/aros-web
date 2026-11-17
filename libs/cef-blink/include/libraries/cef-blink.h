@@ -9,7 +9,8 @@
 #include <exec/types.h>
 
 #define CEFBLINKNAME "cef-blink.library"
-#define CEFBLINKVERSION 1
+#define CEFBLINKVERSION 2
+#define CEFBLINK_API_VERSION 15600
 
 /*
  * CEFBlinkInitialize() result when the engine is already running in this

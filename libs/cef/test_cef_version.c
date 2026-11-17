@@ -14,10 +14,9 @@ struct Library *CEFBase = NULL;
 
 int main(void)
 {
-    const LONG cef_major_expected = 124;
-    const LONG cef_commit_expected = 2933;
-    const LONG chrome_major_expected = 124;
-    const LONG chrome_build_expected = 6367;
+    const LONG cef_major_expected = 156;
+    const LONG chrome_major_expected = 156;
+    const LONG chrome_build_expected = 8078;
     LONG cef_major;
     LONG cef_commit;
     LONG chrome_major;
@@ -40,9 +39,9 @@ int main(void)
     cef_commit = cef_version_info(3);
     chrome_major = cef_version_info(4);
     chrome_build = cef_version_info(6);
-    platform_hash = cef_api_hash(0);
-    universal_hash = cef_api_hash(1);
-    commit_hash = cef_api_hash(2);
+    platform_hash = cef_api_hash(CEF_AROS_API_VERSION, 0);
+    universal_hash = cef_api_hash(CEF_AROS_API_VERSION, 1);
+    commit_hash = cef_api_hash(CEF_AROS_API_VERSION, 2);
 
     KPrintF("[CEF-VERSION] cef=%ld commit=%ld chrome=%ld.%ld\n",
         cef_major, cef_commit, chrome_major, chrome_build);
@@ -50,7 +49,8 @@ int main(void)
         platform_hash, universal_hash, commit_hash);
 
     if (cef_major == cef_major_expected &&
-        cef_commit == cef_commit_expected &&
+        cef_commit > 0 &&
+        cef_api_version() == CEF_AROS_API_VERSION &&
         chrome_major == chrome_major_expected &&
         chrome_build == chrome_build_expected &&
         platform_hash != NULL &&

@@ -10,14 +10,16 @@
 #include <aros/libcall.h>
 #include <aros/symbolsets.h>
 #include <exec/libraries.h>
+#include <libraries/cef-blink.h>
 #include <proto/exec.h>
 
 #include <stdlib.h>
 
 #include "cef-blink_libdefs.h"
 
+extern int cef_engine_api_version(void) __asm__("cef_api_version");
 extern int cef_engine_version_info(int entry) __asm__("cef_version_info");
-extern const char *cef_engine_api_hash(int entry) __asm__("cef_api_hash");
+extern const char *cef_engine_api_hash(int version, int entry) __asm__("cef_api_hash");
 extern int cef_engine_execute_process(const void *args, void *application,
     void *sandbox_info) __asm__("cef_execute_process");
 extern int cef_engine_initialize(const void *args, const void *settings,
@@ -30,6 +32,8 @@ extern void cef_engine_quit_message_loop(void) __asm__("cef_quit_message_loop");
 extern int cef_engine_create_browser(const void *window_info, void *client,
     const void *url, const void *settings, void *extra_info,
     void *request_context) __asm__("cef_browser_host_create_browser");
+extern void *cef_engine_create_request_context(const void *settings, void *handler)
+    __asm__("cef_request_context_create_context");
 extern int cef_engine_post_task(int thread_id, void *task)
     __asm__("cef_post_task");
 extern int cef_engine_post_delayed_task(int thread_id, void *task,
@@ -53,6 +57,14 @@ int *__errno_location(void)
     return __stdc_geterrnoptr();
 }
 
+/* Call under cb_EngineLock before entering the generated C API. Clients
+ * that skip an identity query must still use the same ABI as other apps. */
+static int cef_engine_select_api(void)
+{
+    return cef_engine_api_hash(CEFBLINK_API_VERSION, 0) != NULL &&
+        cef_engine_api_version() == CEFBLINK_API_VERSION;
+}
+
 static int CEFBlink_InitLib(LIBBASETYPEPTR CEFBlinkBase)
 {
     InitSemaphore(&CEFBlinkBase->cb_EngineLock);
@@ -74,13 +86,15 @@ AROS_LH1(LONG, CEFBlinkVersionInfo,
     AROS_LIBFUNC_EXIT
 }
 
-AROS_LH1(CONST_STRPTR, CEFBlinkApiHash,
+AROS_LH1(CONST_STRPTR, CEFBlinkLegacyApiHash,
     AROS_LHA(LONG, entry, D0),
     LIBBASETYPEPTR, LIBBASE, 6, CEFBlink)
 {
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
-    return (CONST_STRPTR)cef_engine_api_hash((int)entry);
+    /* The pre-versioned CEF 124 ABI is not compatible with this engine. */
+    (void)entry;
+    return NULL;
     AROS_LIBFUNC_EXIT
 }
 
@@ -91,7 +105,11 @@ AROS_LH3(LONG, CEFBlinkExecuteProcess,
     LIBBASETYPEPTR, LIBBASE, 7, CEFBlink)
 {
     AROS_LIBFUNC_INIT
-    (void)LIBBASE;
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
+    int ready = cef_engine_select_api();
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+    if (!ready)
+        return 1; /* Child-process failure; do not enter an incompatible ABI. */
     return (LONG)cef_engine_execute_process(args, application, sandbox_info);
     AROS_LIBFUNC_EXIT
 }
@@ -108,22 +126,32 @@ AROS_LH4(LONG, CEFBlinkInitialize,
     AROS_LIBFUNC_INIT
 
     ObtainSemaphore(&LIBBASE->cb_EngineLock);
-    if (LIBBASE->cb_EngineState == CEFBLINK_ENGINE_RUNNING)
+    if (!cef_engine_select_api())
+    {
+        ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+        return 0;
+    }
+    if (LIBBASE->cb_EngineState == CEFBLINK_STATE_RUNNING)
     {
         ReleaseSemaphore(&LIBBASE->cb_EngineLock);
         return CEFBLINK_ENGINE_RUNNING;
     }
-    if (LIBBASE->cb_EngineWasShutDown)
+    if (LIBBASE->cb_EngineWasShutDown ||
+        LIBBASE->cb_EngineState != CEFBLINK_ENGINE_UNINITIALIZED)
     {
         ReleaseSemaphore(&LIBBASE->cb_EngineLock);
         return 0;
     }
     LIBBASE->cb_EngineState = CEFBLINK_ENGINE_INITIALIZING;
     LIBBASE->cb_EngineOwner = FindTask(NULL);
+    /* CEF initialization can call back into clients or wait on worker tasks.
+     * Publish the transition, then release the lock before entering CEF. */
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
     rc = (LONG)cef_engine_initialize(args, settings, application,
         sandbox_info);
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
     if (rc != 0)
-        LIBBASE->cb_EngineState = CEFBLINK_ENGINE_RUNNING;
+        LIBBASE->cb_EngineState = CEFBLINK_STATE_RUNNING;
     else
     {
         LIBBASE->cb_EngineState = CEFBLINK_ENGINE_UNINITIALIZED;
@@ -140,14 +168,16 @@ AROS_LH0(void, CEFBlinkShutdown,
     AROS_LIBFUNC_INIT
 
     ObtainSemaphore(&LIBBASE->cb_EngineLock);
-    if (LIBBASE->cb_EngineState != CEFBLINK_ENGINE_RUNNING ||
+    if (LIBBASE->cb_EngineState != CEFBLINK_STATE_RUNNING ||
         LIBBASE->cb_EngineOwner != FindTask(NULL))
     {
         ReleaseSemaphore(&LIBBASE->cb_EngineLock);
         return;
     }
     LIBBASE->cb_EngineState = CEFBLINK_ENGINE_SHUTTING_DOWN;
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
     cef_engine_shutdown();
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
     LIBBASE->cb_EngineWasShutDown = TRUE;
     LIBBASE->cb_EngineOwner = NULL;
     ReleaseSemaphore(&LIBBASE->cb_EngineLock);
@@ -315,5 +345,46 @@ AROS_LH1(void, CEFBlinkStringUserfreeFree,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     cef_engine_string_userfree_utf16_free(str);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH2(CONST_STRPTR, CEFBlinkApiHash,
+    AROS_LHA(LONG, version, D0),
+    AROS_LHA(LONG, entry, D1),
+    LIBBASETYPEPTR, LIBBASE, 21, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    /* One resident engine uses one generated C API version for all apps. */
+    if (version != CEFBLINK_API_VERSION)
+        return NULL;
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
+    CONST_STRPTR hash = (CONST_STRPTR)cef_engine_api_hash((int)version, (int)entry);
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+    return hash;
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH0(LONG, CEFBlinkApiVersion,
+    LIBBASETYPEPTR, LIBBASE, 22, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return (LONG)cef_engine_api_version();
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH2(APTR, CEFBlinkCreateRequestContext,
+    AROS_LHA(APTR, settings, A0),
+    AROS_LHA(APTR, handler, A1),
+    LIBBASETYPEPTR, LIBBASE, 23, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    ObtainSemaphore(&LIBBASE->cb_EngineLock);
+    int ready = LIBBASE->cb_EngineState == CEFBLINK_STATE_RUNNING;
+    ReleaseSemaphore(&LIBBASE->cb_EngineLock);
+    if (!ready || settings == NULL)
+        return NULL;
+    return cef_engine_create_request_context(settings, handler);
     AROS_LIBFUNC_EXIT
 }

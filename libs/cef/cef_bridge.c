@@ -24,13 +24,15 @@ AROS_LH1(LONG, cef_version_info,
     AROS_LIBFUNC_EXIT
 }
 
-AROS_LH1(CONST_STRPTR, cef_api_hash,
+AROS_LH1(CONST_STRPTR, CEFLegacyApiHash,
     AROS_LHA(LONG, entry, D0),
     LIBBASETYPEPTR, LIBBASE, 6, CEF)
 {
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
-    return CEFBlinkApiHash(entry);
+    /* The pre-versioned CEF 124 ABI is not compatible with this engine. */
+    (void)entry;
+    return NULL;
     AROS_LIBFUNC_EXIT
 }
 
@@ -202,5 +204,38 @@ AROS_LH1(void, CEFStringUserfreeFree,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     CEFBlinkStringUserfreeFree(str);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH2(CONST_STRPTR, cef_api_hash,
+    AROS_LHA(LONG, version, D0),
+    AROS_LHA(LONG, entry, D1),
+    LIBBASETYPEPTR, LIBBASE, 21, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return CEFBlinkApiHash(version, entry);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH0(LONG, cef_api_version,
+    LIBBASETYPEPTR, LIBBASE, 22, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return CEFBlinkApiVersion();
+    AROS_LIBFUNC_EXIT
+}
+
+/* Each app supplies its own request-context settings and cache path. The
+ * returned CEF object owns one reference, released through its base.release. */
+AROS_LH2(APTR, CEFCreateRequestContext,
+    AROS_LHA(APTR, settings, A0),
+    AROS_LHA(APTR, handler, A1),
+    LIBBASETYPEPTR, LIBBASE, 23, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return CEFBlinkCreateRequestContext(settings, handler);
     AROS_LIBFUNC_EXIT
 }
