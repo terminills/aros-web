@@ -100,12 +100,28 @@ workbench-libs-cef-blink-archive-check:
 	    exit 1; \
 	}
 
+ifeq ($(AROS_TARGET_CPU),aarch64)
+CEF_ARM_IMAGE_LINK := $(SRCDIR)/$(CURDIR)/../../build/aros-aarch64-engine-link.py
+CEF_ARM_IMAGE_PACK := $(SRCDIR)/$(CURDIR)/../../build/aros-aarch64-engine-image.py
+CEF_ARM_IMAGE_LD ?= $(CEF_SOURCE)/third_party/llvm-build/Release+Asserts/bin/ld.lld
+USER_DEPLIBS += $(CEF_ARM_IMAGE_LINK) $(CEF_ARM_IMAGE_PACK)
+endif
+
 %build_module mmake=workbench-libs-cef-blink \
     modname=cef-blink modtype=library \
     conffile=cef-blink.conf \
     files="cef_blink_engine_bridge $(CEF_INTERPOSERS)" \
     uselibs="$(CEF_BLINK_USELIBS)" \
     stripdebug=no
+
+ifeq ($(AROS_TARGET_CPU),aarch64)
+# Only this large engine needs a final-link veneer pass and compact image.
+# Keep the complete final ELF and map for native fault address resolution.
+workbench-libs-cef-blink_LINK := python3 "$(CEF_ARM_IMAGE_LINK)" \
+    --lld "$(CEF_ARM_IMAGE_LD)" \
+    --metadata-dir "$(GENDIR)/$(CURDIR)/engine-image" -- \
+    $(workbench-libs-cef-blink_LINK)
+endif
 
 $(AROSDIR)/Libs/cef-blink.library: $(CEF_ARCHIVE)
 
