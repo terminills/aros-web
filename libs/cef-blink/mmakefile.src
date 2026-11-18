@@ -53,7 +53,8 @@ USER_LDFLAGS += \
 endif
 
 CEF_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/../v8/engine
-CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/emutls-aros
+CEF_INTERPOSERS := $(CEF_ENGINE_DIR)/emutls-aros $(SRCDIR)/$(CURDIR)/../../build/aros-engine-format
+USER_INCLUDES += -I$(SRCDIR)/compiler/crt/stdc -I$(SRCDIR)/compiler/fmtprintf
 ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 CEF_INTERPOSERS += $(CEF_ENGINE_DIR)/pthread-abi-aros
 else

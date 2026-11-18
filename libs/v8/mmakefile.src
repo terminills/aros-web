@@ -133,7 +133,7 @@ FUNCS := v8allocatorinstall \
          v8findenginesymbol
 
 # Additional source files
-FILES := v8_init v8_platform v8_simple_eval
+FILES := v8_init v8_platform v8_simple_eval $(SRCDIR)/$(CURDIR)/../../build/aros-engine-format
 
 # glibc/pthread compatibility interposers proven with the AROS V8 wrapper.
 V8_ENGINE_DIR := $(SRCDIR)/$(CURDIR)/engine
@@ -176,7 +176,7 @@ ifeq ($(WEB_ENGINE_LEGACY_GLIBC_ABI),yes)
 USER_CFLAGS += -DV8_LEGACY_GLIBC_ABI
 endif
 USER_CXXFLAGS := -std=c++23 -fno-pic -fno-PIE -I$(V8_ENGINE_DIR)
-USER_INCLUDES := -I$(V8_ENGINE_DIR)
+USER_INCLUDES := -I$(V8_ENGINE_DIR) -I$(SRCDIR)/compiler/crt/stdc -I$(SRCDIR)/compiler/fmtprintf
 
 # Add V8 include directories and define V8_USE_REAL_ENGINE when V8 library is available
 ifneq ($(wildcard $(V8_BUILDDIR)/libv8_monolith.a),)
