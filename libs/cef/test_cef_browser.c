@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include <cybergraphx/cybergraphics.h>
+#include <devices/inputevent.h>
 #include <exec/libraries.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
@@ -506,11 +507,16 @@ release_argument:
     release_browser_reference(cef_browser);
 }
 
+static cef_browser_host_t *get_browser_host(void);
+
 static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     cef_browser_t *created_browser)
 {
     (void)self;
     browser = created_browser;
+    cef_browser_host_t *host = get_browser_host();
+    if (host && host->set_focus) host->set_focus(host, 1);
+    if (host && host->base.release) host->base.release(&host->base);
     KPrintF("[CEF-BROWSER] browser created=%p\n", browser);
 }
 
@@ -568,15 +574,30 @@ static void request_browser_close(void)
     release_browser_host(host);
 }
 
+static unsigned mouse_modifiers(UWORD qualifier)
+{
+    unsigned flags = 0;
+    if (qualifier & (IEQUALIFIER_LSHIFT | IEQUALIFIER_RSHIFT)) flags |= EVENTFLAG_SHIFT_DOWN;
+    if (qualifier & IEQUALIFIER_CONTROL) flags |= EVENTFLAG_CONTROL_DOWN;
+    if (qualifier & (IEQUALIFIER_LALT | IEQUALIFIER_RALT)) flags |= EVENTFLAG_ALT_DOWN;
+    if (qualifier & (IEQUALIFIER_LCOMMAND | IEQUALIFIER_RCOMMAND)) flags |= EVENTFLAG_COMMAND_DOWN;
+    if (qualifier & IEQUALIFIER_CAPSLOCK) flags |= EVENTFLAG_CAPS_LOCK_ON;
+    if (qualifier & IEQUALIFIER_LEFTBUTTON) flags |= EVENTFLAG_LEFT_MOUSE_BUTTON;
+    if (qualifier & IEQUALIFIER_MIDBUTTON) flags |= EVENTFLAG_MIDDLE_MOUSE_BUTTON;
+    if (qualifier & IEQUALIFIER_RBUTTON) flags |= EVENTFLAG_RIGHT_MOUSE_BUTTON;
+    return flags;
+}
+
 static void handle_window_messages(void)
 {
     struct IntuiMessage *message;
-    ULONG message_class;
-
-    while ((message = (struct IntuiMessage *)
-        GetMsg(browser_window->UserPort)) != NULL)
+    while ((message = (struct IntuiMessage *)GetMsg(browser_window->UserPort)) != NULL)
     {
-        message_class = message->Class;
+        /* Intuition owns the message after ReplyMsg: copy every event field. */
+        const ULONG message_class = message->Class;
+        const UWORD code = message->Code, qualifier = message->Qualifier;
+        cef_mouse_event_t mouse = { message->MouseX - browser_window->BorderLeft,
+            message->MouseY - browser_window->BorderTop, mouse_modifiers(qualifier) };
         ReplyMsg((struct Message *)message);
 
         switch (message_class)
@@ -592,6 +613,46 @@ static void handle_window_messages(void)
                 EndRefresh(browser_window, TRUE);
                 invalidate_browser();
                 break;
+            case IDCMP_ACTIVEWINDOW:
+            case IDCMP_INACTIVEWINDOW:
+            {
+                cef_browser_host_t *host = get_browser_host();
+                if (host && host->set_focus)
+                    host->set_focus(host, message_class == IDCMP_ACTIVEWINDOW);
+                release_browser_host(host);
+                break;
+            }
+            case IDCMP_MOUSEMOVE:
+            case IDCMP_MOUSEBUTTONS:
+            {
+                cef_browser_host_t *host = get_browser_host();
+                if (!host) break;
+                if (message_class == IDCMP_MOUSEMOVE && host->send_mouse_move_event)
+                {
+                    const int outside = mouse.x < 0 || mouse.y < 0 ||
+                        mouse.x >= browser_window->Width - browser_window->BorderLeft - browser_window->BorderRight ||
+                        mouse.y >= browser_window->Height - browser_window->BorderTop - browser_window->BorderBottom;
+                    host->send_mouse_move_event(host, &mouse, outside);
+                }
+                else if (message_class == IDCMP_MOUSEBUTTONS && host->send_mouse_click_event)
+                {
+                    cef_mouse_button_type_t button;
+                    unsigned flag;
+                    switch (code & ~IECODE_UP_PREFIX)
+                    {
+                        case IECODE_LBUTTON: button = MBT_LEFT; flag = EVENTFLAG_LEFT_MOUSE_BUTTON; break;
+                        case IECODE_MBUTTON: button = MBT_MIDDLE; flag = EVENTFLAG_MIDDLE_MOUSE_BUTTON; break;
+                        case IECODE_RBUTTON: button = MBT_RIGHT; flag = EVENTFLAG_RIGHT_MOUSE_BUTTON; break;
+                        default: release_browser_host(host); continue;
+                    }
+                    const int up = (code & IECODE_UP_PREFIX) != 0;
+                    if (up) mouse.modifiers &= ~flag; else mouse.modifiers |= flag;
+                    if (!up && host->set_focus) host->set_focus(host, 1);
+                    host->send_mouse_click_event(host, &mouse, button, up, 1);
+                }
+                release_browser_host(host);
+                break;
+            }
         }
     }
 }
@@ -700,11 +761,13 @@ int main(int argc, char **argv)
         WA_AutoAdjust, TRUE,
         WA_GimmeZeroZero, TRUE,
         WA_Activate, TRUE,
+        WA_ReportMouse, TRUE,
         WA_DragBar, TRUE,
         WA_DepthGadget, TRUE,
         WA_CloseGadget, TRUE,
         WA_SizeGadget, TRUE,
-        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_NEWSIZE | IDCMP_REFRESHWINDOW,
+        WA_IDCMP, IDCMP_CLOSEWINDOW | IDCMP_NEWSIZE | IDCMP_REFRESHWINDOW |
+            IDCMP_MOUSEMOVE | IDCMP_MOUSEBUTTONS | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW,
         TAG_DONE);
     if (browser_window == NULL)
     {
