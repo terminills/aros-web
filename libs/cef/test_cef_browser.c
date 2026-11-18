@@ -28,6 +28,18 @@
 #include "include/capi/cef_load_handler_capi.h"
 #include "include/capi/cef_render_handler_capi.h"
 
+/* Whole-guest accounting, sampled only at lifecycle boundaries. Other tasks
+ * can allocate between calls; these are not exclusive engine heap totals. */
+static void report_guest_memory(const char *phase)
+{
+    IPTR total = AvailMem(MEMF_ANY | MEMF_TOTAL);
+    IPTR free_bytes = AvailMem(MEMF_ANY);
+    IPTR largest = AvailMem(MEMF_ANY | MEMF_LARGEST);
+    KPrintF("[CEF-MEM] phase=%s total=%p free=%p used=%p largest=%p\n",
+        phase, (APTR)total, (APTR)free_bytes,
+        (APTR)(total - free_bytes), (APTR)largest);
+}
+
 #define VIEW_WIDTH 960
 #define VIEW_HEIGHT 540
 #define CLOSE_AFTER_PAINT_TICKS 100
@@ -478,6 +490,7 @@ static void CEF_CALLBACK on_paint(cef_render_handler_t *self,
         }
         first_paint_tick = pump_tick;
         first_paint = 1;
+        report_guest_memory("first-paint");
         KPrintF("[CEF-BROWSER] first paint %ldx%ld dirty=%lu\n",
             (LONG)width, (LONG)height, (ULONG)dirty_rect_count);
     }
@@ -722,7 +735,9 @@ int main(int argc, char **argv)
         set_url_override(argv[2]);
     if (argc > 3)
         settle_ticks = (ULONG)atol(argv[3]);
+    report_guest_memory("before-cef-open");
     CEFBase = OpenLibrary(CEFNAME, CEFVERSION);
+    report_guest_memory("after-cef-open");
     if (CEFBase == NULL)
     {
         KPrintF("[CEF-BROWSER] cef.library open failed\n");
@@ -806,8 +821,10 @@ int main(int argc, char **argv)
         goto close_window;
     }
 
+    report_guest_memory("before-initialize");
     initialize_result = CEFInitialize(&main_args, &settings, NULL, NULL);
     KPrintF("[CEF-BROWSER] initialize rc=%ld\n", initialize_result);
+    report_guest_memory("after-initialize");
     if (initialize_result == 0)
         goto close_window;
 
@@ -901,7 +918,9 @@ int main(int argc, char **argv)
     }
 
 shutdown:
+    report_guest_memory("before-shutdown");
     CEFShutdown();
+    report_guest_memory("after-shutdown");
     KPrintF("[CEF-BROWSER] CEF teardown returned\n");
 
 close_window:
@@ -911,5 +930,6 @@ close_window:
 close_library:
     CloseLibrary(CEFBase);
     CEFBase = NULL;
+    report_guest_memory("after-cef-close");
     return result;
 }
