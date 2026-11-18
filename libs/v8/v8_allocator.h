@@ -39,6 +39,8 @@ BOOL V8AllocatorIsInstalledImpl(void);
  * Owned address ranges: a pointer inside a registered range is freed by that
  * range's free function, whichever thread or process releases it. See
  * v8_allocator.cpp. Implementations of the V8OwnerRangeAdd/Remove LVOs.
+ * Removal waits for in-flight ownership/free callbacks. Release all owned
+ * pointers before removing an owner. Callbacks must not modify the registry.
  */
 void V8OwnerRangesInitImpl(void);
 BOOL V8OwnerRangeAddImpl(APTR base, IPTR size, V8FreeFunc freeFn);

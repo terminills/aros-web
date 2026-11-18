@@ -140,12 +140,11 @@ inline void *V8HeapAllocate(size_t size)
  * THIS operator delete, which used to free it to stdc and corrupt the TLSF free
  * list.
  *
- * Lookup is lock-free: a slot is published by writing base and free function
- * first and the size last (release), and retired by clearing the size first,
- * so a reader either sees a complete range or none. Ranges are keyed by
- * address, not by caller, so several processes registering their own heaps
- * at once is fine. Writers are rare (process start and exit) and serialise on
- * a semaphore.
+ * Lookup and callbacks hold a shared native semaphore. Retirement takes the
+ * exclusive semaphore, so it cannot clear/reuse a slot or unload a callback
+ * until all in-flight frees have returned. Callers must still release all
+ * owned pointers before retiring their heap. Callbacks must not mutate this
+ * registry while executing under the shared lock.
  */
 struct OwnedRange
 {
@@ -157,7 +156,8 @@ struct OwnedRange
 enum { V8_OWNED_RANGES = 32 };
 OwnedRange             g_owned[V8_OWNED_RANGES];
 struct SignalSemaphore g_owned_lock;
-volatile BOOL          g_owned_lock_ready = FALSE;
+BOOL                   g_owned_lock_ready = FALSE;
+unsigned               g_owner_count = 0;
 
 /*
  * OWNER CHECKS - for a heap scattered over many blocks (PartitionAlloc
@@ -198,10 +198,15 @@ inline void V8HeapRelease(void *ptr)
     if (ptr == nullptr)
         return;
 
-    if (V8FreeFunc owner = OwnerOf(ptr))
+    if (__atomic_load_n(&g_owner_count, __ATOMIC_ACQUIRE) != 0)
     {
-        owner(ptr);
-        return;
+        ObtainSemaphoreShared(&g_owned_lock);
+        V8FreeFunc owner = OwnerOf(ptr);
+        if (owner != nullptr)
+            owner(ptr);
+        ReleaseSemaphore(&g_owned_lock);
+        if (owner != nullptr)
+            return;
     }
 
     /* A foreign default-heap pointer also commits us to that heap. Publish
@@ -258,12 +263,12 @@ extern "C" void V8OwnerRangesInitImpl(void)
     InitSemaphore(&g_allocator_lock);
     __atomic_store_n(&g_allocator_lock_ready, TRUE, __ATOMIC_RELEASE);
     InitSemaphore(&g_owned_lock);
-    g_owned_lock_ready = TRUE;
+    __atomic_store_n(&g_owned_lock_ready, TRUE, __ATOMIC_RELEASE);
 }
 
 static inline BOOL OwnedLockInit(void)
 {
-    return g_owned_lock_ready;
+    return __atomic_load_n(&g_owned_lock_ready, __ATOMIC_ACQUIRE);
 }
 
 /*****************************************************************************
@@ -282,6 +287,11 @@ extern "C" BOOL V8OwnerRangeAddImpl(APTR base, IPTR size, V8FreeFunc freeFn)
     ObtainSemaphore(&g_owned_lock);
 
     const IPTR lo = (IPTR)base;
+    if (size > ~(IPTR)0 - lo)
+    {
+        ReleaseSemaphore(&g_owned_lock);
+        return FALSE;
+    }
     const IPTR hi = lo + size;
     int slot = -1;
     for (int i = 0; i < V8_OWNED_RANGES; i++)
@@ -308,6 +318,7 @@ extern "C" BOOL V8OwnerRangeAddImpl(APTR base, IPTR size, V8FreeFunc freeFn)
     g_owned[slot].base = lo;
     g_owned[slot].free = freeFn;
     __atomic_store_n(&g_owned[slot].size, size, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&g_owner_count, 1u, __ATOMIC_RELEASE);
 
     ReleaseSemaphore(&g_owned_lock);
     return TRUE;
@@ -334,6 +345,7 @@ extern "C" BOOL V8OwnerRangeRemoveImpl(APTR base)
             __atomic_store_n(&g_owned[i].size, (IPTR)0, __ATOMIC_RELEASE);
             g_owned[i].free = nullptr;
             g_owned[i].base = 0;
+            __atomic_sub_fetch(&g_owner_count, 1u, __ATOMIC_RELEASE);
             found = TRUE;
             break;
         }
@@ -378,6 +390,7 @@ extern "C" BOOL V8OwnerCheckAddImpl(V8OwnsFunc ownsFn, V8FreeFunc freeFn)
 
     g_checks[slot].free = freeFn;
     __atomic_store_n(&g_checks[slot].owns, ownsFn, __ATOMIC_RELEASE);
+    __atomic_add_fetch(&g_owner_count, 1u, __ATOMIC_RELEASE);
 
     ReleaseSemaphore(&g_owned_lock);
     return TRUE;
@@ -404,6 +417,7 @@ extern "C" BOOL V8OwnerCheckRemoveImpl(V8OwnsFunc ownsFn)
             __atomic_store_n(&g_checks[i].owns, (V8OwnsFunc)nullptr,
                              __ATOMIC_RELEASE);
             g_checks[i].free = nullptr;
+            __atomic_sub_fetch(&g_owner_count, 1u, __ATOMIC_RELEASE);
             found = TRUE;
             break;
         }

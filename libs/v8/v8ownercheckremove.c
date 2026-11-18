@@ -26,6 +26,9 @@
         the heap behind it goes away, typically at process exit, once no
         pointer from that heap is still held by V8.
 
+        Removal waits for callbacks already in progress. Ownership and free
+        callbacks must not add or remove registry entries themselves.
+
     INPUTS
         ownsFn - the predicate passed to V8OwnerCheckAdd()
 

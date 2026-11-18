@@ -26,6 +26,9 @@
         Call it before the heap behind the range goes away, typically at
         process exit, once no pointer from that heap is still held by V8.
 
+        Removal waits for callbacks already in progress. Ownership and free
+        callbacks must not add or remove registry entries themselves.
+
     INPUTS
         base - the base passed to V8OwnerRangeAdd()
 
