@@ -11,6 +11,7 @@ static struct SignalSemaphore reference_lock;
 static struct { cef_base_ref_counted_t *base; LONG count; } references[8];
 static unsigned reference_count;
 static int reference_error;
+static const char *application_name;
 static void host_register_reference(cef_base_ref_counted_t *base)
 {
     ObtainSemaphore(&reference_lock);
@@ -46,7 +47,6 @@ static struct Task *application_task;
 static BYTE done_signal = -1;
 static ULONG hold_ticks = 1500;
 static int view_started, view_done, view_result = RETURN_FAIL;
-static const char *application_name;
 static char window_title[96];
 
 static int handlers_released(int include_task)

@@ -35,9 +35,16 @@ static void report_guest_memory(const char *phase)
     IPTR total = AvailMem(MEMF_ANY | MEMF_TOTAL);
     IPTR free_bytes = AvailMem(MEMF_ANY);
     IPTR largest = AvailMem(MEMF_ANY | MEMF_LARGEST);
-    KPrintF("[CEF-MEM] phase=%s total=%p free=%p used=%p largest=%p\n",
-        phase, (APTR)total, (APTR)free_bytes,
-        (APTR)(total - free_bytes), (APTR)largest);
+    KPrintF("[CEF-MEM] phase=%s total=%p free=%p used=%p largest=%p"
+#ifdef CEF_BROWSER_HOST_MODE
+        " app=%s"
+#endif
+        "\n", phase, (APTR)total, (APTR)free_bytes,
+        (APTR)(total - free_bytes), (APTR)largest
+#ifdef CEF_BROWSER_HOST_MODE
+        , application_name
+#endif
+    );
 }
 
 #define VIEW_WIDTH 960
