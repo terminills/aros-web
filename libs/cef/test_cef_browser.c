@@ -902,6 +902,7 @@ int main(int argc, char **argv)
 
 shutdown:
     CEFShutdown();
+    KPrintF("[CEF-BROWSER] CEF teardown returned\n");
 
 close_window:
     CloseWindow(browser_window);
