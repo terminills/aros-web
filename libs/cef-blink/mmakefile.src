@@ -72,7 +72,11 @@ endif
 # loaded natively. Without it the module links with exactly those three
 # symbols undefined.
 CEF_BLINK_USELIBS := stdc++ stdc stdcio posixc pthread m atomic \
-    debug net cybergraphics graphics intuition oop v8 linuxso vulkan EGL GL
+    debug net cybergraphics graphics intuition oop v8 vulkan EGL GL
+
+ifeq ($(AROS_TARGET_CPU),x86_64)
+CEF_BLINK_USELIBS += linuxso
+endif
 
 #MM workbench-libs-cef-blink-public-includes
 CEF_BLINK_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
