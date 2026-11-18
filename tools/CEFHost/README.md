@@ -55,3 +55,36 @@ Protocol 1 does not recover from abrupt client or host task death. Clients must
 keep code, callback objects, request messages and reply ports alive until all
 outstanding work returns. The diagnostic probe checks ordinary session lifetime;
 it does not qualify arbitrary application unloading or browser callback lifetime.
+
+## Experimental native browser clients
+
+`workbench-tools-cefsubprocess` builds a small helper that opens the resident
+libraries and calls CEFExecuteProcess with the real child arguments. It does not
+initialize or shut down the host. Native child launch is an explicit diagnostic
+opt-in, using the existing AROS CreateNewProc and MessagePort transport:
+
+```
+Stack 1048576
+SYS:System/CEFHost T:CEFHostProfiles --allow-stop --native-children
+```
+
+Place CEFSubprocess beside CEFHost. The host resolves that directory to a native
+DOS path and enables the port's `--aros-multi-process` mode. The default host
+mode remains unchanged. Host/child diagnostics report allocator function addresses
+and native AvailMem samples; these measure the whole guest, not exclusive engine
+memory.
+
+`workbench-libs-cef-test-host-browser` builds the independent application probe:
+`test_cef_host_browser A http://server/test.html 1500`. The last argument is the
+number of 20 ms ticks to hold after first paint. It posts presentation work to the
+host UI runner, counts callback references, closes the browser, and uses a host
+request as a final UI-queue barrier before unloading application code. A failed
+callback barrier retains the task rather than unloading referenced code. An
+early close request is preserved until asynchronous browser creation completes.
+
+Both x86-64 and AArch64 clients/helpers cross-build. Native x86-64 run 90 launches
+GPU, utility and renderer helpers, and host/child allocator addresses match.
+Actual two-browser storage isolation and callback-drain acceptance have **not**
+passed: run 90 stops at a shared startup-tracing singleton in the engine. The
+Chromium development patch branch carries the ongoing process-state work.
+Do not treat this diagnostic client as a qualified production embedding API.

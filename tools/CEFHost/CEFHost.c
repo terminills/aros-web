@@ -152,6 +152,9 @@ int main(int argc, char **argv)
     char *args[] = {argv[0], "--single-process", "--disable-gpu", "--disable-gpu-compositing", NULL};
     cef_main_args_t main_args = {4, args};
     cef_settings_t settings = {0};
+    cef_char_t subprocess_path[1024];
+    char subprocess_ascii[1024];
+    int native_children = argc > 3 && !strcmp(argv[3], "--native-children");
     const char *profile_root = argc > 1 ? argv[1] : "ENVARC:CEF/Profiles";
     allow_stop = argc > 2 && !strcmp(argv[2], "--allow-stop");
     if (strlen(profile_root) >= sizeof(root_ascii) || !strchr(profile_root, ':') ||
@@ -164,11 +167,22 @@ int main(int argc, char **argv)
     if (!port || !CEFBase || CEFHostRegisterPort(port, NULL) != CEF_HOST_OK) goto done;
     registered = 1;
     CEFGetAllocator(&alloc, &free_fn);
+    KPrintF("[CEF-HOST] shared allocator=%p free=%p\n", alloc, free_fn);
     if (!alloc || !free_fn || !V8AllocatorInstall(alloc, free_fn)) goto done;
     base_init(&dispatch_task.base, sizeof(dispatch_task));
     dispatch_task.execute = dispatch;
     settings.size = sizeof(settings); settings.no_sandbox = 1;
     settings.windowless_rendering_enabled = 1;
+    if (native_children) {
+        /* The port defaults to single-process unless this explicit native
+         * process-model switch is present. */
+        args[1] = "--aros-multi-process";
+        if (!NameFromLock(GetProgramDir(), subprocess_ascii, sizeof(subprocess_ascii)) ||
+            !AddPart(subprocess_ascii, "CEFSubprocess", sizeof(subprocess_ascii)) ||
+            !to_utf16(subprocess_path, sizeof(subprocess_path) / sizeof(*subprocess_path), subprocess_ascii)) goto done;
+        text(&settings.browser_subprocess_path, subprocess_path, strlen(subprocess_ascii));
+        KPrintF("[CEF-HOST] native child executable=%s\n", subprocess_ascii);
+    }
     text(&settings.resources_dir_path, resources, sizeof(resources) / sizeof(*resources) - 1);
     text(&settings.locales_dir_path, locales, sizeof(locales) / sizeof(*locales) - 1);
     text(&settings.root_cache_path, root, strlen(root_ascii));
@@ -179,6 +193,8 @@ int main(int argc, char **argv)
     KPrintF("[CEF-HOST] initialize=%ld\n", (LONG)result);
     if (result != 1) { result = RETURN_FAIL; goto done; }
     initialized = 1;
+    KPrintF("[CEF-HOST-MEM] initialized total=%p free=%p\n",
+        (APTR)AvailMem(MEMF_ANY | MEMF_TOTAL), (APTR)AvailMem(MEMF_ANY));
     result = RETURN_FAIL;
     ui_runner = CEFGetTaskRunner(TID_UI);
     if (!ui_runner) goto done;
@@ -204,6 +220,8 @@ done:
     if (ui_runner) { ui_runner->base.release(&ui_runner->base); ui_runner = NULL; }
     if (initialized) { CEFShutdown(); KPrintF("[CEF-HOST] shutdown returned\n"); }
     if (CEFBase) CloseLibrary(CEFBase);
+    KPrintF("[CEF-HOST-MEM] exited total=%p free=%p\n",
+        (APTR)AvailMem(MEMF_ANY | MEMF_TOTAL), (APTR)AvailMem(MEMF_ANY));
     if (port) DeleteMsgPort(port);
     return result;
 }

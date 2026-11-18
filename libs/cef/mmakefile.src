@@ -64,4 +64,12 @@ CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
     ldflags="$(TARGET_LDFLAGS)" \
     uselibs="cef v8 dos exec debug"
 
+
+#MM workbench-libs-cef-test-host-browser : workbench-libs-cef
+%build_prog mmake=workbench-libs-cef-test-host-browser \
+    progname=test_cef_host_browser files=test_cef_host_browser \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="cef v8 cybergraphics graphics intuition dos exec debug"
+
 %common

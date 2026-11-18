@@ -58,6 +58,7 @@ static struct Window *browser_window;
 static cef_browser_t *browser;
 static int browser_closed;
 static int close_requested;
+static int close_sent;
 static int first_paint;
 static int initial_frame_logged;
 static ULONG first_paint_tick;
@@ -273,30 +274,49 @@ static void set_static_cef_string(cef_string_t *target, cef_char_t *value,
  */
 static void CEF_CALLBACK static_add_ref(cef_base_ref_counted_t *self)
 {
+#ifdef CEF_BROWSER_HOST_MODE
+    host_reference(self, 1);
+#else
     (void)self;
+#endif
 }
 
 static int CEF_CALLBACK static_release(cef_base_ref_counted_t *self)
 {
+#ifdef CEF_BROWSER_HOST_MODE
+    return host_reference(self, -1) == 0;
+#else
     (void)self;
     return 0;
+#endif
 }
 
 static int CEF_CALLBACK static_has_one_ref(cef_base_ref_counted_t *self)
 {
+#ifdef CEF_BROWSER_HOST_MODE
+    return host_reference(self, 0) == 1;
+#else
     (void)self;
     return 1;
+#endif
 }
 
 static int CEF_CALLBACK static_has_at_least_one_ref(
     cef_base_ref_counted_t *self)
 {
+#ifdef CEF_BROWSER_HOST_MODE
+    return host_reference(self, 0) > 0;
+#else
     (void)self;
     return 1;
+#endif
 }
 
 static void initialize_base(cef_base_ref_counted_t *base, size_t size)
 {
+#ifdef CEF_BROWSER_HOST_MODE
+    host_register_reference(base);
+#endif
     base->size = size;
     base->add_ref = static_add_ref;
     base->release = static_release;
@@ -314,6 +334,7 @@ static cef_life_span_handler_t *CEF_CALLBACK get_life_span_handler(
     cef_client_t *self)
 {
     (void)self;
+    life_span_handler.base.add_ref(&life_span_handler.base);
     return &life_span_handler;
 }
 
@@ -321,12 +342,14 @@ static cef_render_handler_t *CEF_CALLBACK get_render_handler(
     cef_client_t *self)
 {
     (void)self;
+    render_handler.base.add_ref(&render_handler.base);
     return &render_handler;
 }
 
 static cef_load_handler_t *CEF_CALLBACK get_load_handler(cef_client_t *self)
 {
     (void)self;
+    load_handler.base.add_ref(&load_handler.base);
     return &load_handler;
 }
 
@@ -334,6 +357,7 @@ static cef_display_handler_t *CEF_CALLBACK get_display_handler(
     cef_client_t *self)
 {
     (void)self;
+    display_handler.base.add_ref(&display_handler.base);
     return &display_handler;
 }
 
@@ -539,6 +563,7 @@ release_argument:
 }
 
 static cef_browser_host_t *get_browser_host(void);
+static void request_browser_close(void);
 
 static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     cef_browser_t *created_browser)
@@ -549,6 +574,7 @@ static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     if (host && host->set_focus) host->set_focus(host, 1);
     if (host && host->base.release) host->base.release(&host->base);
     KPrintF("[CEF-BROWSER] browser created=%p\n", browser);
+    if (close_requested) request_browser_close();
 }
 
 static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
@@ -596,12 +622,14 @@ static void request_browser_close(void)
 {
     cef_browser_host_t *host;
 
-    if (close_requested)
-        return;
     close_requested = 1;
+    if (close_sent)
+        return;
     host = get_browser_host();
-    if (host != NULL && host->close_browser != NULL)
+    if (host != NULL && host->close_browser != NULL) {
+        close_sent = 1;
         host->close_browser(host, 1);
+    }
     release_browser_host(host);
 }
 
@@ -731,6 +759,7 @@ static void initialize_handlers(void)
     life_span_handler.on_before_close = on_before_close;
 }
 
+#ifndef CEF_BROWSER_HOST_MODE
 int main(int argc, char **argv)
 {
     char *cef_argv[5];
@@ -954,3 +983,5 @@ close_library:
     report_guest_memory("after-cef-close");
     return result;
 }
+
+#endif /* !CEF_BROWSER_HOST_MODE */
