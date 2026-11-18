@@ -12,11 +12,13 @@ with an in-progress **Chromium 156.0.8078.96 / CEF 8078** migration on
 124. Node remains **22.23.1** and its integration with the upgraded engine is
 not yet validated.
 
-The native x86-64 V8 library builds with GCC 16 and Binutils 2.47. A native
-AROS QEMU probe passes JavaScript execution, separate globals in two isolates,
-and continued execution after the other isolate is destroyed. Full CEF builds,
-browser/profile isolation, graphics and Widevine runtime validation remain
-in progress. This branch is not a finished browser release.
+Native x86-64 and AArch64 CEF/Blink and shared V8 libraries now build with
+GCC 16. Both native AROS QEMU guests render a local page, run JavaScript and
+WebAssembly in dedicated workers, and return from full CEF shutdown in the
+recorded passing runs. Intermittent ARM shutdown stalls remain recorded.
+Browser/profile isolation, network browsing, graphics acceleration and Widevine
+runtime validation remain in progress. This branch is not a finished browser
+release. See [current validation and limits](docs/status.md).
 
 For the standalone V8 archive, copy `build/v8-native156.args.gn` to the owned
 Chromium checkout's `out/aros-v8-library156/args.gn` and set its toolchain and SDK
