@@ -4,3 +4,6 @@
  * do not change the SDK default or maintain a second formatting algorithm. */
 #define FULL_SPECIFIERS
 #include "__vcformat.c"
+
+/* Match the SDK formatter's C-locale decimal point in this module. */
+#include "__decimalpoint.c"
