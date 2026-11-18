@@ -107,12 +107,31 @@ CEF_ARM_IMAGE_LD ?= $(CEF_SOURCE)/third_party/llvm-build/Release+Asserts/bin/ld.
 USER_DEPLIBS += $(CEF_ARM_IMAGE_LINK) $(CEF_ARM_IMAGE_PACK)
 endif
 
+ifeq ($(AROS_TARGET_CPU),x86_64)
+CEF_SECTION_LINK := $(SRCDIR)/$(CURDIR)/../../build/aros-engine-section-link.py
+CEF_SECTION_NAMES := $(SRCDIR)/$(CURDIR)/../../build/aros-engine-section-names.py
+USER_DEPLIBS += $(CEF_SECTION_LINK) $(CEF_SECTION_NAMES)
+endif
+
 %build_module mmake=workbench-libs-cef-blink \
     modname=cef-blink modtype=library \
     conffile=cef-blink.conf \
     files="cef_blink_engine_bridge $(CEF_INTERPOSERS)" \
     uselibs="$(CEF_BLINK_USELIBS)" \
     stripdebug=no
+
+ifeq ($(AROS_TARGET_CPU),x86_64)
+# Retain function symbols but avoid keeping duplicated per-function section
+# names in debug.library. Keep the original ELF beside the link metadata.
+CEF_SECTION_STRIP := $(STRIP)
+workbench-libs-cef-blink_LINK := python3 "$(CEF_SECTION_LINK)" \
+    --strip-command "$(CEF_SECTION_STRIP)" \
+    --metadata-dir "$(GENDIR)/$(CURDIR)/engine-section-names" -- \
+    $(workbench-libs-cef-blink_LINK)
+# Run the normal SDK strip operation inside the wrapper before compaction;
+# never pass the compacted duplicate section labels back through BFD tools.
+$(workbench-libs-cef-blink_MODULE): STRIP :=
+endif
 
 ifeq ($(AROS_TARGET_CPU),aarch64)
 # Only this large engine needs a final-link veneer pass and compact image.
