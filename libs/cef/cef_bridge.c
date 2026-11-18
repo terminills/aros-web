@@ -14,6 +14,9 @@
 
 #include "cef_libdefs.h"
 
+/* Version 3 adds the retained task-runner vector. Never call it on v2. */
+int CEFBlinkBase_version = 3;
+
 AROS_LH1(LONG, cef_version_info,
     AROS_LHA(LONG, entry, D0),
     LIBBASETYPEPTR, LIBBASE, 5, CEF)
@@ -237,5 +240,15 @@ AROS_LH2(APTR, CEFCreateRequestContext,
     AROS_LIBFUNC_INIT
     (void)LIBBASE;
     return CEFBlinkCreateRequestContext(settings, handler);
+    AROS_LIBFUNC_EXIT
+}
+
+AROS_LH1(APTR, CEFGetTaskRunner,
+    AROS_LHA(LONG, thread_id, D0),
+    LIBBASETYPEPTR, LIBBASE, 28, CEF)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return CEFBlinkGetTaskRunner(thread_id);
     AROS_LIBFUNC_EXIT
 }

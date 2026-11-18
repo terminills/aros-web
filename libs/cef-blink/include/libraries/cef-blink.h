@@ -9,7 +9,7 @@
 #include <exec/types.h>
 
 #define CEFBLINKNAME "cef-blink.library"
-#define CEFBLINKVERSION 2
+#define CEFBLINKVERSION 3
 #define CEFBLINK_API_VERSION 15600
 
 /*

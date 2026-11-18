@@ -30,7 +30,7 @@ CEF_PUBLIC_INCLUDES := $(call WILDCARD, include/libraries/*.h)
 %build_module mmake=workbench-libs-cef \
     modname=cef modtype=library \
     conffile=cef.conf \
-    files="cef_bridge" \
+    files="cef_bridge cef_host_transport" \
     uselibs="$(CEF_USELIBS)"
 
 #MM workbench-libs-cef-test-version : workbench-libs-cef

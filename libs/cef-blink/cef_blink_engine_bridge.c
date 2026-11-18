@@ -388,3 +388,17 @@ AROS_LH2(APTR, CEFBlinkCreateRequestContext,
     return cef_engine_create_request_context(settings, handler);
     AROS_LIBFUNC_EXIT
 }
+
+/* Capture on an engine-owned task, then retain this CEF runner for posting
+ * from independent native clients. No caller-parent lookup is needed to post. */
+extern void *cef_engine_get_task_runner(int thread_id)
+    __asm__("cef_task_runner_get_for_thread");
+AROS_LH1(APTR, CEFBlinkGetTaskRunner,
+    AROS_LHA(LONG, thread_id, D0),
+    LIBBASETYPEPTR, LIBBASE, 24, CEFBlink)
+{
+    AROS_LIBFUNC_INIT
+    (void)LIBBASE;
+    return cef_engine_get_task_runner((int)thread_id);
+    AROS_LIBFUNC_EXIT
+}
