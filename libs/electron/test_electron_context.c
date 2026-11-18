@@ -2918,6 +2918,7 @@ static int engine_main(int argc, char **argv)
         goto failed;
 
     memset(&window_info, 0, sizeof(window_info));
+    window_info.size = sizeof(window_info);
     window_info.bounds.width = VIEW_WIDTH;
     window_info.bounds.height = VIEW_HEIGHT;
     set_static_cef_string(&window_info.window_name, window_title,
@@ -3343,6 +3344,7 @@ static int real_main(int argc, char **argv)
         goto detach_node;
 
     memset(&window_info, 0, sizeof(window_info));
+    window_info.size = sizeof(window_info);
     window_info.bounds.width = VIEW_WIDTH;
     window_info.bounds.height = VIEW_HEIGHT;
     window_info.windowless_rendering_enabled = 1;

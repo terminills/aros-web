@@ -749,6 +749,7 @@ int main(int argc, char **argv)
         goto close_window;
 
     memset(&window_info, 0, sizeof(window_info));
+    window_info.size = sizeof(window_info);
     window_info.bounds.width = browser_window->GZZWidth;
     window_info.bounds.height = browser_window->GZZHeight;
     window_info.windowless_rendering_enabled = 1;
