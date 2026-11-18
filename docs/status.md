@@ -39,8 +39,23 @@ and [runtime evidence directory](https://github.com/terminills/chromium-aros-pat
 The relevant implementation is `aros-web` 97ecd87; companion evidence through
 66e12c8 includes the ARM18 and x86-74 JS/Wasm runs.
 
-Full Chrome UI, network browsing, hardware acceleration, Web Notification API
-delivery, Widevine playback, CEF.class and Node/Electron integration with this
+A native x86-64 HTTP fixture also loads HTML, JSON with `fetch`, and a worker
+script through AROSTCP/PCnet and QEMU user networking. The worker executes a
+Wasm export and the page displays `AROS_HTTP_ENGINE_PASS`. The server records
+HTTP 200 for all three resources. This is local HTTP transport validation;
+a separate run77 also resolves and loads `https://example.com/` with HTTP 200,
+without a certificate-bypass flag, then returns from full CEF shutdown. Its
+screenshot shows missing non-Latin font glyphs. Arbitrary-site compatibility
+and ARM networking remain separate checks. The retained network evidence is
+[documented here](https://github.com/terminills/chromium-aros-patches/blob/chromium-156-aros-cef/upgrade/156/evidence/cef-network-validation.md).
+
+The native x86 request-context probe also passes same-origin cookie separation
+between two in-memory contexts and continued access to B after releasing A
+references, followed by full CEF shutdown. It initializes the shared engine
+once. This is not persistent-profile or independent-application qualification.
+
+Full Chrome UI, general network browsing, hardware acceleration, Web Notification
+API delivery, Widevine playback, CEF.class and Node/Electron integration with this
 156 engine remain unqualified. Native notification-library tests and historical
 124 media tests do not establish those 156 browser features. The current browser
 fixture uses single-process software rendering; it does not prove production
@@ -63,7 +78,7 @@ The patch export records original source commits and expected Git tree IDs.
 Uncommitted development snapshots are identified separately in its `wip/`
 directory and are not automatically applied by its queue script.
 
-## Native Chromium camera/microphone milestone
+### Native Chromium camera/microphone milestone
 
 The following results belong to a native x86-64 ADT AROS guest in QEMU with
 physical USB passthrough of a UGREEN Camera 2K (`0c45:636f`). They are historical
@@ -100,7 +115,7 @@ xHCI implementation. Those OS drivers are outside this repository. This
 milestone does not establish that any later laptop release image contains the
 same modules or behaves identically.
 
-## Runtime architecture and remaining work
+### Historical runtime architecture and remaining work
 
 The sources implement shared V8 residency, per-task platform selection,
 allocation-owner handling, Node integration and resident Electron engine
@@ -118,7 +133,7 @@ No full SDK/browser/CEF/Node/Electron rebuild was performed just to publish
 these sources and READMEs. Patch replay, source provenance and documentation
 checks are reported separately from the earlier native runtime evidence.
 
-## Console NG publication correction
+### Console NG publication correction
 
 The initial October 21 web-stack refresh stopped at Console NG's October 16
 cursor-save changes. The follow-up exports its committed development subtree

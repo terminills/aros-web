@@ -16,7 +16,8 @@ Native x86-64 and AArch64 CEF/Blink and shared V8 libraries now build with
 GCC 16. Both native AROS QEMU guests render a local page, run JavaScript and
 WebAssembly in dedicated workers, and return from full CEF shutdown in the
 recorded passing runs. Intermittent ARM shutdown stalls remain recorded.
-Browser/profile isolation, network browsing, graphics acceleration and Widevine
+Native x86 HTTP page/fetch/worker loading and external HTTPS also pass.
+Browser/profile isolation, graphics acceleration and Widevine
 runtime validation remain in progress. This branch is not a finished browser
 release. See [current validation and limits](docs/status.md).
 
