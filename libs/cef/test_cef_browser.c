@@ -229,15 +229,33 @@ static int frame_has_test_content(const void *buffer, int width, int height)
 static cef_char_t url_override[2048];
 static size_t url_override_len;
 
-static void set_url_override(const char *ascii)
+/* @DOS:path reads a URL fixture without the shell's command-line limit. */
+static int set_url_override(const char *ascii)
 {
     size_t limit = (sizeof(url_override) / sizeof(url_override[0])) - 1;
+    char file_url[2048];
     size_t i;
 
-    for (i = 0; ascii[i] != '\0' && i < limit; ++i)
+    if (ascii[0] == '@')
+    {
+        BPTR file = Open(ascii + 1, MODE_OLDFILE);
+        LONG length;
+        if (file == BNULL)
+            return 0;
+        length = Read(file, file_url, sizeof(file_url));
+        Close(file);
+        if (length <= 0 || (size_t)length > limit)
+            return 0;
+        file_url[length] = 0;
+        ascii = file_url;
+    }
+    if (strlen(ascii) > limit)
+        return 0;
+    for (i = 0; ascii[i] != '\0'; ++i)
         url_override[i] = (cef_char_t)(unsigned char)ascii[i];
     url_override[i] = 0;
     url_override_len = i;
+    return 1;
 }
 
 static void set_static_cef_string(cef_string_t *target, cef_char_t *value,
@@ -731,8 +749,11 @@ int main(int argc, char **argv)
 
     if (argc > 1)
         snapshot_path = argv[1];
-    if (argc > 2)
-        set_url_override(argv[2]);
+    if (argc > 2 && !set_url_override(argv[2]))
+    {
+        KPrintF("[CEF-BROWSER] invalid or unreadable URL fixture\n");
+        return RETURN_FAIL;
+    }
     if (argc > 3)
         settle_ticks = (ULONG)atol(argv[3]);
     report_guest_memory("before-cef-open");
