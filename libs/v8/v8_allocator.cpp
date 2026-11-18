@@ -84,8 +84,29 @@ V8FreeFunc   g_free  = DefaultFree;
 
 /* Set on the first allocation served. After this the vtable is frozen: see
    the ordering note at the top of the file. */
-volatile BOOL g_allocator_used = FALSE;
+BOOL          g_allocator_used = FALSE;
 BOOL          g_allocator_installed = FALSE;
+struct SignalSemaphore g_allocator_lock;
+BOOL g_allocator_lock_ready = FALSE;
+
+inline void FreezeAllocator()
+{
+    if (__atomic_load_n(&g_allocator_used, __ATOMIC_ACQUIRE))
+        return;
+    if (__atomic_load_n(&g_allocator_lock_ready, __ATOMIC_ACQUIRE))
+    {
+        ObtainSemaphore(&g_allocator_lock);
+        __atomic_store_n(&g_allocator_used, TRUE, __ATOMIC_RELEASE);
+        ReleaseSemaphore(&g_allocator_lock);
+    }
+    else
+    {
+        /* Library constructors run before the public vectors are exposed.
+           An early allocation freezes the default; installation cannot race
+           until V8OwnerRangesInitImpl has initialized the native lock. */
+        __atomic_store_n(&g_allocator_used, TRUE, __ATOMIC_RELEASE);
+    }
+}
 
 inline void *V8HeapAllocate(size_t size)
 {
@@ -93,7 +114,7 @@ inline void *V8HeapAllocate(size_t size)
     if (size == 0)
         size = 1;
 
-    g_allocator_used = TRUE;
+    FreezeAllocator();
 
     void *p = g_alloc(size);
     /* V8 is built without exceptions on this target, so a throwing operator
@@ -183,9 +204,9 @@ inline void V8HeapRelease(void *ptr)
         return;
     }
 
-    /* Deliberately NOT gated on g_allocator_used: a free can only reach here
-       after an allocation, and setting the flag on the free path would hide an
-       ordering mistake rather than expose it. */
+    /* A foreign default-heap pointer also commits us to that heap. Publish
+       or observe the selected pair before using its free callback. */
+    FreezeAllocator();
     g_free(ptr);
 }
 
@@ -202,38 +223,30 @@ inline void V8HeapRelease(void *ptr)
 *****************************************************************************/
 extern "C" BOOL V8AllocatorInstallImpl(V8AllocFunc allocFn, V8FreeFunc freeFn)
 {
-    if (allocFn == nullptr || freeFn == nullptr)
+    if (allocFn == nullptr || freeFn == nullptr ||
+        !__atomic_load_n(&g_allocator_lock_ready, __ATOMIC_ACQUIRE))
         return FALSE;
 
-    if (g_allocator_installed)
+    ObtainSemaphore(&g_allocator_lock);
+    BOOL installed = FALSE;
+    if (__atomic_load_n(&g_allocator_installed, __ATOMIC_ACQUIRE))
     {
-        /* Idempotent only if it is the same pair; a DIFFERENT pair is the
-           dangerous case and is refused. */
-        return (g_alloc == allocFn && g_free == freeFn);
+        installed = (g_alloc == allocFn && g_free == freeFn);
     }
-
-    if (g_allocator_used)
+    else if (!__atomic_load_n(&g_allocator_used, __ATOMIC_ACQUIRE))
     {
-        /* Too late: memory has already been served from the default heap, and
-           honouring this would free those objects to a different allocator.
-           Reported by return value ONLY - deliberately no bug()/kprintf here.
-           v8.library is a DISK library, and on a pc target kprintf needs
-           _arosdebuglock, a symbol that lives in the kernel ROM, so any
-           disk-loaded library calling it fails to LINK. Hosted builds hide
-           that because their arossupport uses a different vkprintf.
-           See aros-kprintf-unlinkable-in-disk-libraries. */
-        return FALSE;
+        g_alloc = allocFn;
+        g_free = freeFn;
+        __atomic_store_n(&g_allocator_installed, TRUE, __ATOMIC_RELEASE);
+        installed = TRUE;
     }
-
-    g_alloc = allocFn;
-    g_free = freeFn;
-    g_allocator_installed = TRUE;
-    return TRUE;
+    ReleaseSemaphore(&g_allocator_lock);
+    return installed;
 }
 
 extern "C" BOOL V8AllocatorIsInstalledImpl(void)
 {
-    return g_allocator_installed;
+    return __atomic_load_n(&g_allocator_installed, __ATOMIC_ACQUIRE);
 }
 
 /* Called once from the library's init (V8_InitLib), which runs single-threaded
@@ -242,6 +255,8 @@ extern "C" BOOL V8AllocatorIsInstalledImpl(void)
    cores. */
 extern "C" void V8OwnerRangesInitImpl(void)
 {
+    InitSemaphore(&g_allocator_lock);
+    __atomic_store_n(&g_allocator_lock_ready, TRUE, __ATOMIC_RELEASE);
     InitSemaphore(&g_owned_lock);
     g_owned_lock_ready = TRUE;
 }
