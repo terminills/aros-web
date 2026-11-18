@@ -554,18 +554,14 @@ bool AROSPlatformBackend::WriteFile(const char* filename,
 
 void AROSPlatformBackend::Print(const char* message) {
   if (message) {
-    printf("[V8 AROS] %s\n", message);
-    Flush(Output());
+    // Resident diagnostics must outlive the first caller and its stdio buffers.
+    kprintf("[V8 AROS] %s\n", message);
   }
 }
 
 void AROSPlatformBackend::PrintError(const char* message) {
   if (message) {
-    fprintf(stderr, "[V8 AROS ERROR] %s\n", message);
-    BPTR error_fh = ErrorOutput();
-    if (error_fh) {
-      Flush(error_fh);
-    }
+    kprintf("[V8 AROS ERROR] %s\n", message);
   }
 }
 
