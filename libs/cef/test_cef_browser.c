@@ -9,6 +9,7 @@
 
 #include <cybergraphx/cybergraphics.h>
 #include <devices/inputevent.h>
+#include <dos/dostags.h>
 #include <exec/libraries.h>
 #include <exec/memory.h>
 #include <intuition/intuition.h>
@@ -79,6 +80,7 @@ static ULONG first_paint_tick;
  */
 static ULONG settle_ticks;
 static int settle_snapshot_written;
+static int show_about_after_paint;
 /*
  * A loading application can go minutes without changing a pixel, and on_paint
  * only fires when something does change.  Keep the last frame so the snapshot
@@ -230,7 +232,9 @@ static int frame_has_test_content(const void *buffer, int width, int height)
 /*
  * Optional argv[2] overrides the built-in document, so a real http:// page can
  * be loaded without rebuilding, and optional argv[3] is the settle window in
- * pump ticks (see settle_ticks). cef_string_t is UTF-16 and a URL is ASCII once
+ * pump ticks (see settle_ticks). Optional argv[4] = --show-about opens native
+ * About AROS after first paint for a combined runtime screenshot.
+ * cef_string_t is UTF-16 and a URL is ASCII once
  * percent-encoded, so widening byte-by-byte is sufficient and avoids dragging
  * a converter in here.
  */
@@ -542,6 +546,12 @@ static void CEF_CALLBACK on_paint(cef_render_handler_t *self,
         report_guest_memory("first-paint");
         KPrintF("[CEF-BROWSER] first paint %ldx%ld dirty=%lu\n",
             (LONG)width, (LONG)height, (ULONG)dirty_rect_count);
+        if (show_about_after_paint)
+        {
+            LONG about_result = SystemTags("SYS:System/About",
+                SYS_Asynch, TRUE, TAG_DONE);
+            KPrintF("[CEF-BROWSER] About AROS launch=%ld\n", about_result);
+        }
     }
     else if (first_paint && settle_ticks != 0 && !settle_snapshot_written &&
         pump_tick >= first_paint_tick + settle_ticks)
@@ -792,6 +802,8 @@ int main(int argc, char **argv)
     }
     if (argc > 3)
         settle_ticks = (ULONG)atol(argv[3]);
+    if (argc > 4 && strcmp(argv[4], "--show-about") == 0)
+        show_about_after_paint = 1;
     report_guest_memory("before-cef-open");
     CEFBase = OpenLibrary(CEFNAME, CEFVERSION);
     report_guest_memory("after-cef-open");
