@@ -84,7 +84,7 @@ static cef_life_span_handler_t life_span_handler;
  * failing, which surfaces as
  *   FATAL:pdf_extension_util.cc(205) Check failed:
  *       manifest_contents.find(kNameTag) != std::string::npos
- * Staged from out/aros-cef-bootstrap-adt.  See test_electron_lifecycle.c.
+ * Stage matching resources from out/aros-cef156.  See test_electron_lifecycle.c.
  */
 static cef_char_t resources_path[] = u"Developer:CEF";
 static cef_char_t locales_path[] = u"Developer:CEF/locales";

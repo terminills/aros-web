@@ -16,8 +16,8 @@
 
 struct Library *CEFBase = NULL;
 
-static cef_char_t resources_path[] = u"Developer:Chromium";
-static cef_char_t locales_path[] = u"Developer:Chromium/locales";
+static cef_char_t resources_path[] = u"Developer:CEF";
+static cef_char_t locales_path[] = u"Developer:CEF/locales";
 
 static void set_static_cef_string(cef_string_t *target, cef_char_t *value,
     size_t length)
@@ -64,8 +64,8 @@ int main(int argc, char **argv)
 
     KPrintF("[CEF-LIFECYCLE] initialize begin settings=%lu\n",
         (ULONG)sizeof(settings));
-    KPrintF("[CEF-LIFECYCLE] resources=Developer:Chromium "
-        "locales=Developer:Chromium/locales\n");
+    KPrintF("[CEF-LIFECYCLE] resources=Developer:CEF "
+        "locales=Developer:CEF/locales\n");
     initialize_result = CEFInitialize(&main_args, &settings, NULL, NULL);
     KPrintF("[CEF-LIFECYCLE] initialize end rc=%ld\n", initialize_result);
     if (initialize_result == 0)
