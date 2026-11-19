@@ -203,6 +203,12 @@ int main(int argc, char **argv)
     unsigned i;
     int result = RETURN_FAIL;
     if (argc < 3 || strlen(argv[1]) >= CEF_HOST_NAME_MAX || !set_url_override(argv[2])) return RETURN_ERROR;
+    /* Optional synthetic test profile; empty/default retains in-memory mode.
+     * CEFHost validates the name before resolving it below its profile root. */
+    if (argc > 5) {
+        if (strlen(argv[5]) >= sizeof(request.profile)) return RETURN_ERROR;
+        strcpy(request.profile, argv[5]);
+    }
     application_name = argv[1];
     if (argc > 3) hold_ticks = strtoul(argv[3], NULL, 10);
     /* Optional diagnostic budget; the default and acceptance are unchanged. */
