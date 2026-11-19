@@ -27,12 +27,18 @@ int main(int argc, char **argv)
     if (!CEFBase) return RETURN_FAIL;
     CEFGetAllocator(&alloc, &free_fn);
     if (alloc && free_fn && V8AllocatorInstall(alloc, free_fn)) {
+        /* Short ID-keyed records supplement verbose lines that can interleave
+         * with another native task's serial output. IDs survive Task reuse. */
+        KPrintF("[CEF-CHILD-EVENT] E %lu %s\n",
+            (ULONG)GetETaskID(FindTask(NULL)), type);
         KPrintF("[CEF-CHILD] enter type=%s task=%p facade=%p allocator=%p free=%p\n", type, FindTask(NULL), CEFBase, alloc, free_fn);
         KPrintF("[CEF-CHILD-DETAIL] type=%s subtype=%s task=%p id=%lu\n",
             type, subtype, FindTask(NULL), (ULONG)GetETaskID(FindTask(NULL)));
         KPrintF("[CEF-CHILD-MEM] enter type=%s total=%p free=%p\n", type,
             (APTR)AvailMem(MEMF_ANY | MEMF_TOTAL), (APTR)AvailMem(MEMF_ANY));
         result = CEFExecuteProcess(&args, NULL, NULL);
+        KPrintF("[CEF-CHILD-EVENT] X %lu %s %ld\n",
+            (ULONG)GetETaskID(FindTask(NULL)), type, result);
         KPrintF("[CEF-CHILD-MEM] exit type=%s total=%p free=%p\n", type,
             (APTR)AvailMem(MEMF_ANY | MEMF_TOTAL), (APTR)AvailMem(MEMF_ANY));
         KPrintF("[CEF-CHILD] exit type=%s result=%ld\n", type, result);
