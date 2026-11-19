@@ -149,12 +149,17 @@ int main(int argc, char **argv)
     struct Message *msg;
     int registered = 0, published = 0, initialized = 0, result = RETURN_FAIL;
     APTR alloc = NULL, free_fn = NULL;
-    char *args[] = {argv[0], "--single-process", "--disable-gpu", "--disable-gpu-compositing", NULL};
+    char *args[] = {argv[0], "--single-process", "--disable-gpu", "--disable-gpu-compositing", NULL, NULL};
     cef_main_args_t main_args = {4, args};
     cef_settings_t settings = {0};
     cef_char_t subprocess_path[1024];
     char subprocess_ascii[1024];
     int native_children = argc > 3 && !strcmp(argv[3], "--native-children");
+    if (argc > 4 && !strcmp(argv[4], "--debug-native")) {
+        /* Retain INFO/error diagnostics on AROS DEBUG: for native test runs. */
+        args[4] = "--enable-logging=system";
+        main_args.argc = 5;
+    }
     const char *profile_root = argc > 1 ? argv[1] : "ENVARC:CEF/Profiles";
     allow_stop = argc > 2 && !strcmp(argv[2], "--allow-stop");
     if (strlen(profile_root) >= sizeof(root_ascii) || !strchr(profile_root, ':') ||
