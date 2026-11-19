@@ -1,6 +1,4 @@
 .KEY URL,PROFILE
-.DEF URL "chrome://newtab/"
-.DEF PROFILE "default"
 .BRA {
 .KET }
 FailAt 21
@@ -18,5 +16,16 @@ If WARN
     Echo "Chromium: the shared engine did not become ready. Check its installation and profile drawer."
     Quit 20
 EndIf
-SYS:System/Chromium "{URL}" "{PROFILE}"
-
+If "{URL}" EQ ""
+    If "{PROFILE}" EQ ""
+        SYS:System/Chromium
+    Else
+        SYS:System/Chromium chrome://newtab/ "{PROFILE}"
+    EndIf
+Else
+    If "{PROFILE}" EQ ""
+        SYS:System/Chromium "{URL}"
+    Else
+        SYS:System/Chromium "{URL}" "{PROFILE}"
+    EndIf
+EndIf

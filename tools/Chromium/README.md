@@ -16,6 +16,18 @@ its native PROJECT icon uses `C:IconX`. The containing drawer also needs its
 own DRAWER icon. The native executable has a TOOL icon when exposed directly.
 Both the script and icon specify a 1 MiB stack.
 
+Generate the three native icon files using the matching AROS build's host
+converter:
+
+```
+python3 build-icons.py --ilbmtoicon /path/to/aros-build/bin/linux-x86_64/tools/ilbmtoicon --output /path/to/package-icons
+```
+
+Use `Start Chromium.info` beside the installed launcher script (renamed to
+`Chromium.info`), `ChromiumDrawer.info` beside its containing drawer (also
+renamed to `Chromium.info`), and the generated TOOL `Chromium.info` beside
+the executable. The drawer opens tall enough to display the icon and label.
+
 The script starts the shared host if its ready port is absent, waits for
 readiness, then opens Chromium. The host keeps running when the last window
 closes so another application can reuse the same engine. Host registration
