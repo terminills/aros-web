@@ -22,6 +22,31 @@ struct V8SymbolEntry
     APTR address;
 };
 
+#ifdef V8_EXACT_IMPORT_TABLE
+/* Native debug.library may omit ELF symbols with extended section indices.
+ * These linker-relocated addresses cover the exact Chromium import ABI even
+ * when such functions are absent from debug enumeration. */
+#include "v8-import-table.h"
+
+static APTR V8_FindExactImport(CONST_STRPTR name)
+{
+    ULONG low = 0;
+    ULONG high = sizeof(v8ExactImports) / sizeof(v8ExactImports[0]);
+    while (low < high)
+    {
+        ULONG middle = low + (high - low) / 2;
+        int comparison = strcmp(name, v8ExactImports[middle].name);
+        if (comparison < 0)
+            high = middle;
+        else if (comparison > 0)
+            low = middle + 1;
+        else
+            return v8ExactImports[middle].address;
+    }
+    return NULL;
+}
+#endif
+
 struct V8SymbolIndex
 {
     struct V8SymbolEntry *entries;
@@ -269,6 +294,12 @@ AROS_UFH3(static void, V8_FindSymbolHook,
 
     if (symbolName == NULL || symbolName[0] == '\0')
         return NULL;
+
+#ifdef V8_EXACT_IMPORT_TABLE
+    address = V8_FindExactImport(symbolName);
+    if (address != NULL)
+        return address;
+#endif
 
     if (V8_EnsureSymbolIndex())
     {

@@ -209,6 +209,21 @@ workbench-libs-v8-archive-check:
 	    exit 1; \
 	}
 
+# Exact-build imports must not depend on debug.library enumerating symbols
+# beyond ELF's 16-bit section-index range. Keep the generated table dependent
+# on the matching Chromium manifest and generator, including quick builds.
+V8_IMPORT_MANIFEST := $(V8_SOURCE)/build/config/aros/v8_library/v8_function_imports.txt
+V8_IMPORT_TABLE := $(GENDIR)/$(CURDIR)/v8-import-table.h
+ifneq ($(wildcard $(V8_IMPORT_MANIFEST)),)
+ifeq ($(V8_USE_REAL_ENGINE),yes)
+USER_CFLAGS += -DV8_EXACT_IMPORT_TABLE
+USER_INCLUDES += -I$(GENDIR)/$(CURDIR)
+$(GENDIR)/$(CURDIR)/v8/v8findenginesymbol.o: $(V8_IMPORT_TABLE)
+$(V8_IMPORT_TABLE): $(V8_IMPORT_MANIFEST) $(SRCDIR)/$(CURDIR)/../../build/v8-import-table.py
+	python3 $(SRCDIR)/$(CURDIR)/../../build/v8-import-table.py $(V8_IMPORT_MANIFEST) $@
+endif
+endif
+
 # Build linklib wrapper for V8 monolithic library
 # This allows the AROS build system to properly link the large V8 static library
 # Following the pattern used by mesa3dgl.library for handling large external libraries
