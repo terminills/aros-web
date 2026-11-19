@@ -27,6 +27,13 @@ int main(int argc, char **argv)
     LONG result = CEF_HOST_UNAVAILABLE;
     int ok = 0;
     if (argc < 2) goto done;
+    if (!strcmp(argv[1], "present")) {
+        /* Readiness only: do not load the engine into a cold probe process. */
+        Forbid();
+        ok = FindPort(CEF_HOST_PORT) != NULL;
+        Permit();
+        goto done;
+    }
     if (!strcmp(argv[1], "wait")) {
         unsigned attempt;
         BOOL ready = FALSE;

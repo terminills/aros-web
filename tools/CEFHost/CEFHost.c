@@ -214,21 +214,35 @@ int main(int argc, char **argv)
     cef_settings_t settings = {0};
     cef_char_t subprocess_path[1024];
     char subprocess_ascii[1024];
-    int native_children = argc > 3 && !strcmp(argv[3], "--native-children");
-    if (argc > 4 && !strcmp(argv[4], "--debug-native")) {
+    int native_children = 0, debug_native = 0, root_supplied = 0;
+    const char *profile_root = "ENVARC:CEF/Profiles";
+    for (int i = 1; i < argc; ++i) {
+        if (!strcmp(argv[i], "--native-children")) native_children = 1;
+        else if (!strcmp(argv[i], "--debug-native")) debug_native = 1;
+        else if (!strcmp(argv[i], "--allow-stop")) allow_stop = 1;
+        else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "?")) {
+            Printf("Usage: CEFHost [profile-root] [--native-children] [--debug-native] [--allow-stop]\n");
+            return RETURN_OK;
+        } else if (!argv[i][0] || argv[i][0] == '-' || root_supplied) {
+            Printf("CEF host: invalid argument; use --help\n");
+            return RETURN_ERROR;
+        } else {
+            profile_root = argv[i];
+            root_supplied = 1;
+        }
+    }
+    if (debug_native) {
         /* Retain INFO/error diagnostics on AROS DEBUG: for native test runs. */
         args[4] = "--enable-logging=system";
         main_args.argc = 5;
     }
-    const char *profile_root = argc > 1 ? argv[1] : "ENVARC:CEF/Profiles";
-    allow_stop = argc > 2 && !strcmp(argv[2], "--allow-stop");
     if (!to_utf16(root, sizeof(root) / sizeof(*root), profile_root) ||
         !prepare_profile_root(profile_root) ||
         !to_utf16(root, sizeof(root) / sizeof(*root), root_ascii)) {
         Printf("CEF host: cannot prepare profile directory (DOS error %ld)\n", IoErr());
         return RETURN_ERROR;
     }
-    if (argc > 4 && !strcmp(argv[4], "--debug-native"))
+    if (debug_native)
         KPrintF("[CEF-HOST] profile root input=%s canonical=%s\n", profile_root, root_ascii);
     owner = FindTask(NULL);
     port = CreateMsgPort();

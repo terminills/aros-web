@@ -1,0 +1,15 @@
+include $(SRCDIR)/config/aros.cfg
+include $(SRCDIR)/$(CURDIR)/../../build/chromium.mk
+CEF_SOURCE ?= $(CHROMIUM_SRC)
+CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef156
+CEF_HEADERS := $(CEF_SOURCE)/cef
+CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/gen/cef
+
+#MM workbench-tools-chromium-client : workbench-libs-cef
+%build_prog mmake=workbench-tools-chromium-client \
+    progname=Chromium files=Chromium targetdir=$(AROS_SYSTEM) \
+    cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
+    ldflags="$(TARGET_LDFLAGS)" \
+    uselibs="cef v8 cybergraphics graphics intuition dos exec debug"
+
+%common

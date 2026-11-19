@@ -1,0 +1,22 @@
+.KEY URL,PROFILE
+.DEF URL "chrome://newtab/"
+.DEF PROFILE "default"
+.BRA {
+.KET }
+FailAt 21
+Stack 1048576
+SYS:System/CEFHostProbe present
+If WARN
+    Run >NIL: Execute S:CEFHost-Run
+    If WARN
+        Echo "Chromium: unable to start the shared engine."
+        Quit 20
+    EndIf
+EndIf
+SYS:System/CEFHostProbe wait
+If WARN
+    Echo "Chromium: the shared engine did not become ready. Check its installation and profile drawer."
+    Quit 20
+EndIf
+SYS:System/Chromium "{URL}" "{PROFILE}"
+
