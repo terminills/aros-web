@@ -146,6 +146,18 @@ static int handle(struct CEFHostRequest *r, int allow_stop)
         }
         s->context = CEFCreateRequestContext(&settings, NULL);
         if (!s->context) { FreeMem(s, sizeof(*s)); r->result = CEF_HOST_UNAVAILABLE; break; }
+        if (r->profile[0]) {
+            cef_string_userfree_t actual = s->context->get_cache_path(s->context);
+            int persistent = actual && actual->length && actual->str;
+            if (actual) CEFStringUserfreeFree(actual);
+            if (!persistent) {
+                KPrintF("[CEF-HOST] named profile unavailable: persistent cache rejected\n");
+                drop_context(s->context);
+                FreeMem(s, sizeof(*s));
+                r->result = CEF_HOST_UNAVAILABLE;
+                break;
+            }
+        }
         s->id = next_session++;
         if (!next_session) next_session = 1;
         s->client = r->sender;

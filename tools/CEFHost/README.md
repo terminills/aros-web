@@ -46,6 +46,9 @@ currently accepts ASCII native DOS paths. The host creates missing root drawers
 and resolves the native assign with `NameFromLock` before initializing CEF, so
 a fresh root and reopened children use the same spelling. An unavailable root
 fails startup instead of silently selecting temporary storage.
+If CEF rejects a named profile's cache path and falls back to memory, OPEN
+returns unavailable without publishing a session. Empty-profile requests remain
+the explicit way to request temporary storage.
 This naming scheme provides storage
 separation, not security isolation.
 
