@@ -621,10 +621,46 @@ release_argument:
 static cef_browser_host_t *get_browser_host(void);
 static void request_browser_close(void);
 
+#ifdef CEF_BROWSER_CHROME_WINDOW
+/* CEF can create additional Chrome tabs with this same client. Keep every
+ * transferred browser reference until its own on_before_close callback. All
+ * list access is confined to the host UI runner. */
+struct ChromeBrowserEntry {
+    struct ChromeBrowserEntry *next;
+    cef_browser_t *browser;
+    int identifier;
+    int close_sent;
+};
+static struct ChromeBrowserEntry *chrome_browsers;
+static unsigned chrome_browser_count;
+#endif
+
 static void CEF_CALLBACK on_after_created(cef_life_span_handler_t *self,
     cef_browser_t *created_browser)
 {
     (void)self;
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    struct ChromeBrowserEntry *entry = AllocVec(sizeof(*entry), MEMF_ANY | MEMF_CLEAR);
+    ++chrome_browser_count;
+    browser_closed = 0;
+    if (!entry) {
+        /* Still wait for this browser's close callback before unloading code. */
+        cef_browser_host_t *failed_host = created_browser->get_host(created_browser);
+        reference_error = 1;
+        if (failed_host) {
+            failed_host->close_browser(failed_host, 1);
+            failed_host->base.release(&failed_host->base);
+        }
+        release_browser_reference(created_browser);
+        return;
+    }
+    entry->browser = created_browser;
+    entry->identifier = created_browser->get_identifier(created_browser);
+    entry->next = chrome_browsers;
+    chrome_browsers = entry;
+    KPrintF("[CEF-CHROME-TABS] created id=%ld active=%lu\n",
+        entry->identifier, chrome_browser_count);
+#endif
     browser = created_browser;
     cef_browser_host_t *host = get_browser_host();
     if (host && host->set_focus) host->set_focus(host, 1);
@@ -638,10 +674,29 @@ static void CEF_CALLBACK on_before_close(cef_life_span_handler_t *self,
 {
     (void)self;
 
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    int identifier = closing_browser->get_identifier(closing_browser);
+    struct ChromeBrowserEntry **slot = &chrome_browsers;
+    while (*slot && (*slot)->identifier != identifier) slot = &(*slot)->next;
+    if (*slot) {
+        struct ChromeBrowserEntry *entry = *slot;
+        *slot = entry->next;
+        release_browser_reference(entry->browser);
+        FreeVec(entry);
+    }
+    if (chrome_browser_count) --chrome_browser_count;
+    else reference_error = 1;
+    browser = chrome_browsers ? chrome_browsers->browser : NULL;
+    browser_closed = chrome_browser_count == 0;
+    KPrintF("[CEF-CHROME-TABS] closed id=%ld active=%lu\n",
+        identifier, chrome_browser_count);
+    release_browser_reference(closing_browser);
+#else
     release_browser_reference(closing_browser);
     release_browser_reference(browser);
     browser = NULL;
     browser_closed = 1;
+#endif
     KPrintF("[CEF-BROWSER] browser closed\n");
 }
 
@@ -679,6 +734,19 @@ static void request_browser_close(void)
     cef_browser_host_t *host;
 
     close_requested = 1;
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    for (;;) {
+        struct ChromeBrowserEntry *entry = chrome_browsers;
+        while (entry && entry->close_sent) entry = entry->next;
+        if (!entry) break;
+        entry->close_sent = 1;
+        host = entry->browser->get_host(entry->browser);
+        /* Do not retain a list cursor across a potentially reentrant callback. */
+        if (host && host->close_browser) host->close_browser(host, 1);
+        release_browser_host(host);
+    }
+    return;
+#endif
     if (close_sent)
         return;
     host = get_browser_host();
