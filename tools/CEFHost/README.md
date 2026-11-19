@@ -35,10 +35,23 @@ posting and withdrawal with an Exec semaphore; dispatch uses CEF tasks and the
 existing native AROS event loop, without a polling timer or POSIX transport.
 
 OPEN requires an application name. Empty profile creates an independent
-in-memory request context. An explicit profile uses root/application/profile;
-the same explicit application/profile intentionally shares storage. Names allow
-ASCII letters, digits, underscore and hyphen. The configured root currently
-accepts ASCII native DOS paths.
+in-memory request context. An explicit profile uses a direct child of the root,
+`p-` followed by the lowercase hexadecimal SHA256 of the exact application name,
+a NUL separator, and the exact profile name. Chrome requires this flat layout;
+the earlier nested layout caused it to fall back to an off-the-record profile.
+The same explicit application/profile intentionally shares storage. Case and
+application/profile boundaries remain distinct on case-insensitive filesystems.
+Names allow ASCII letters, digits, underscore and hyphen. The configured root
+currently accepts ASCII native DOS paths. The host creates missing root drawers
+and resolves the native assign with `NameFromLock` before initializing CEF, so
+a fresh root and reopened children use the same spelling. An unavailable root
+fails startup instead of silently selecting temporary storage.
+This naming scheme provides storage
+separation, not security isolation.
+
+Run `python3 tools/CEFHost/tests/test_profile_identity.py` from the repository
+root for host-side identity checks against SHA256 reference values. These
+checks do not establish native profile persistence.
 
 The returned context and UI task runner are borrowed until CLOSE. Capture/use
 the returned runner to post work from an independent application task: the

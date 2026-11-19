@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdio.h>
+#include "profile_identity.h"
 #include <exec/memory.h>
 #include <exec/semaphores.h>
 #include <libraries/cef_client.h>
@@ -54,6 +55,50 @@ static int to_utf16(cef_char_t *out, size_t capacity, const char *in)
     }
     out[n] = 0; return 1;
 }
+/* Resolve assigns before CEF normalizes existing profile children. Otherwise
+ * a fresh T: root and its later RAM Disk:T child compare as unrelated paths. */
+static int prepare_profile_root(const char *input)
+{
+    char path[sizeof(root_ascii)];
+    char *part, *colon;
+    BPTR lock;
+    struct FileInfoBlock info;
+    size_t length = strlen(input);
+    if (!length || length >= sizeof(path)) return 0;
+    strcpy(path, input);
+    colon = strchr(path, ':');
+    if (!colon || colon == path) return 0;
+    while (length && path[length - 1] == '/') path[--length] = 0;
+    for (part = colon + 1; ; ++part) {
+        char saved = *part;
+        if (saved && saved != '/') continue;
+        *part = 0;
+        lock = Lock(path, ACCESS_READ);
+        if (!lock) {
+            lock = CreateDir(path);
+            if (!lock) return 0;
+            /* Reopen with a shared lock: NameFromLock duplicates its input,
+             * which is not valid for an exclusive CreateDir result. */
+            UnLock(lock);
+            lock = Lock(path, ACCESS_READ);
+        }
+        if (!lock) return 0;
+        if (!Examine(lock, &info) || info.fib_DirEntryType <= 0) {
+            UnLock(lock);
+            return 0;
+        }
+        if (!saved) {
+            int ok = NameFromLock(lock, root_ascii, sizeof(root_ascii));
+            BPTR resolved = ok ? Lock(root_ascii, ACCESS_READ) : BNULL;
+            ok = resolved && SameLock(lock, resolved) == LOCK_SAME;
+            if (resolved) UnLock(resolved);
+            UnLock(lock);
+            return ok;
+        }
+        UnLock(lock);
+        *part = saved;
+    }
+}
 static int valid_name(const char *s, int allow_empty)
 {
     unsigned i;
@@ -87,12 +132,15 @@ static int handle(struct CEFHostRequest *r, int allow_stop)
         if (!s) { r->result = CEF_HOST_NOMEM; break; }
         settings.size = sizeof(settings);
         if (r->profile[0]) {
-            int length = snprintf(cache_ascii, sizeof(cache_ascii), "%s/%s/%s",
-                root_ascii, r->application, r->profile);
-            if (length < 0 || length >= sizeof(cache_ascii) ||
+            char component[67];
+            int length;
+            profile_identity(component, r->application, r->profile);
+            strcpy(cache_ascii, root_ascii);
+            if (!AddPart(cache_ascii, component, sizeof(cache_ascii)) ||
                 !to_utf16(cache, sizeof(cache) / sizeof(*cache), cache_ascii)) {
                 FreeMem(s, sizeof(*s)); break;
             }
+            length = strlen(cache_ascii);
             text(&settings.cache_path, cache, length);
             settings.persist_session_cookies = 1;
         }
@@ -162,9 +210,14 @@ int main(int argc, char **argv)
     }
     const char *profile_root = argc > 1 ? argv[1] : "ENVARC:CEF/Profiles";
     allow_stop = argc > 2 && !strcmp(argv[2], "--allow-stop");
-    if (strlen(profile_root) >= sizeof(root_ascii) || !strchr(profile_root, ':') ||
-        !to_utf16(root, sizeof(root) / sizeof(*root), profile_root)) return RETURN_ERROR;
-    strcpy(root_ascii, profile_root);
+    if (!to_utf16(root, sizeof(root) / sizeof(*root), profile_root) ||
+        !prepare_profile_root(profile_root) ||
+        !to_utf16(root, sizeof(root) / sizeof(*root), root_ascii)) {
+        Printf("CEF host: cannot prepare profile directory (DOS error %ld)\n", IoErr());
+        return RETURN_ERROR;
+    }
+    if (argc > 4 && !strcmp(argv[4], "--debug-native"))
+        KPrintF("[CEF-HOST] profile root input=%s canonical=%s\n", profile_root, root_ascii);
     owner = FindTask(NULL);
     port = CreateMsgPort();
     KPrintF("[CEF-HOST] opening facade task=%p version=%ld\n", owner, (LONG)CEFVERSION);
