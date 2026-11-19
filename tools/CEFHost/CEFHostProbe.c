@@ -26,6 +26,23 @@ int main(int argc, char **argv)
     IPTR session;
     LONG result = CEF_HOST_UNAVAILABLE;
     int ok = 0;
+    if (argc < 2) goto done;
+    if (!strcmp(argv[1], "wait")) {
+        unsigned attempt;
+        BOOL ready = FALSE;
+        /* The owner publishes this port after CEF initialization. Waiting
+         * here avoids loading the engine concurrently with the cold host. */
+        for (attempt = 0; attempt < 600; ++attempt) {
+            Forbid();
+            ready = FindPort(CEF_HOST_PORT) != NULL;
+            Permit();
+            if (ready) break;
+            Delay(50);
+        }
+        KPrintF("[CEF-HOST-PROBE] native port %s attempts=%lu\n",
+            ready ? "ready" : "timeout", (ULONG)attempt);
+        if (!ready) goto done;
+    }
     KPrintF("[CEF-HOST-PROBE] opening facade task=%p\n", FindTask(NULL));
     CEFBase = OpenLibrary("cef.library", 3);
     KPrintF("[CEF-HOST-PROBE] facade=%p ioerr=%ld\n", CEFBase, CEFBase ? 0L : IoErr());
