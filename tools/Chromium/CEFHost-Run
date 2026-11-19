@@ -1,3 +1,2 @@
 Stack 1048576
-SYS:System/CEFHost ENVARC:CEF/Profiles --native-children
-
+SYS:System/CEFHost ENVARC:CEF/Profiles --native-children --resources-dir SYS:System/CEF

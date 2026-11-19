@@ -23,7 +23,7 @@ static struct Task *owner;
 static cef_task_t dispatch_task;
 static cef_task_runner_t *ui_runner;
 static int allow_stop;
-static cef_char_t root[1024], resources[] = u"Developer:CEF", locales[] = u"Developer:CEF/locales";
+static cef_char_t root[1024], resources[1024], locales[1024];
 static char root_ascii[768];
 static ULONG session_count;
 static IPTR next_session = 1;
@@ -214,14 +214,25 @@ int main(int argc, char **argv)
     cef_settings_t settings = {0};
     cef_char_t subprocess_path[1024];
     char subprocess_ascii[1024];
+    char resources_ascii[1024], locales_ascii[1024];
     int native_children = 0, debug_native = 0, root_supplied = 0;
     const char *profile_root = "ENVARC:CEF/Profiles";
+    const char *resource_root = "Developer:CEF";
+    int resource_supplied = 0;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--native-children")) native_children = 1;
         else if (!strcmp(argv[i], "--debug-native")) debug_native = 1;
         else if (!strcmp(argv[i], "--allow-stop")) allow_stop = 1;
+        else if (!strcmp(argv[i], "--resources-dir")) {
+            if (resource_supplied || i + 1 >= argc || !argv[i + 1][0]) {
+                Printf("CEF host: --resources-dir requires one directory\n");
+                return RETURN_ERROR;
+            }
+            resource_root = argv[++i];
+            resource_supplied = 1;
+        }
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "?")) {
-            Printf("Usage: CEFHost [profile-root] [--native-children] [--debug-native] [--allow-stop]\n");
+            Printf("Usage: CEFHost [profile-root] [--native-children] [--debug-native] [--allow-stop] [--resources-dir directory]\n");
             return RETURN_OK;
         } else if (!argv[i][0] || argv[i][0] == '-' || root_supplied) {
             Printf("CEF host: invalid argument; use --help\n");
@@ -229,6 +240,24 @@ int main(int argc, char **argv)
         } else {
             profile_root = argv[i];
             root_supplied = 1;
+        }
+    }
+    {
+        struct FileInfoBlock info;
+        BPTR lock = Lock(resource_root, ACCESS_READ);
+        int ok = lock && Examine(lock, &info) && info.fib_DirEntryType > 0 &&
+            NameFromLock(lock, resources_ascii, sizeof(resources_ascii));
+        if (lock) UnLock(lock);
+        if (!ok) {
+            Printf("CEF host: cannot find the browser resource directory\n");
+            return RETURN_ERROR;
+        }
+        strcpy(locales_ascii, resources_ascii);
+        if (!AddPart(locales_ascii, "locales", sizeof(locales_ascii)) ||
+            !to_utf16(resources, sizeof(resources) / sizeof(*resources), resources_ascii) ||
+            !to_utf16(locales, sizeof(locales) / sizeof(*locales), locales_ascii)) {
+            Printf("CEF host: browser resource path is too long\n");
+            return RETURN_ERROR;
         }
     }
     if (debug_native) {
@@ -269,8 +298,8 @@ int main(int argc, char **argv)
         text(&settings.browser_subprocess_path, subprocess_path, strlen(subprocess_ascii));
         KPrintF("[CEF-HOST] native child executable=%s\n", subprocess_ascii);
     }
-    text(&settings.resources_dir_path, resources, sizeof(resources) / sizeof(*resources) - 1);
-    text(&settings.locales_dir_path, locales, sizeof(locales) / sizeof(*locales) - 1);
+    text(&settings.resources_dir_path, resources, strlen(resources_ascii));
+    text(&settings.locales_dir_path, locales, strlen(locales_ascii));
     text(&settings.root_cache_path, root, strlen(root_ascii));
     result = CEFExecuteProcess(&main_args, NULL, NULL);
     KPrintF("[CEF-HOST] execute=%ld\n", (LONG)result);

@@ -35,9 +35,13 @@ arbitrates concurrent startup attempts; only the registered owner initializes
 CEF. The regular startup script does not enable diagnostic host shutdown.
 
 The host requires matching `cef.library`, `cef-blink.library`, `v8.library`,
-CEF resources under `Developer:CEF`, and writable persistent profiles under
+CEF resources under `SYS:System/CEF`, and writable persistent profiles under
 `ENVARC:CEF/Profiles`. Browser profiles provide storage separation in AROS's
 shared address space; they are not an OS security sandbox.
+
+The release startup supplies `--resources-dir SYS:System/CEF`; no `Developer:`
+assign is required. Direct diagnostic invocations retain the older
+`Developer:CEF` default unless a resource directory is explicitly supplied.
 
 The timed diagnostic clients still use the same callback/reference lifecycle
 implementation. This launcher removes their automatic close timers; closing
