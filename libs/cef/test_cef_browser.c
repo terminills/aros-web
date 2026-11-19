@@ -355,16 +355,18 @@ static void CEF_CALLBACK on_render_process_terminated(
     cef_termination_status_t status, int error_code,
     const cef_string_t *error_string)
 {
-    (void)self; (void)cef_browser; (void)error_string;
+    (void)self; (void)error_string;
     KPrintF("[CEF-BROWSER] renderer-terminated status=%ld error=%ld tick=%lu\n",
             (LONG)status, (LONG)error_code, pump_tick);
+    release_browser_reference(cef_browser);
 }
 
 static void CEF_CALLBACK on_document_available_in_main_frame(
     cef_request_handler_t *self, cef_browser_t *cef_browser)
 {
-    (void)self; (void)cef_browser;
+    (void)self;
     KPrintF("[CEF-BROWSER] document-available tick=%lu\n", pump_tick);
+    release_browser_reference(cef_browser);
 }
 
 static cef_life_span_handler_t *CEF_CALLBACK get_life_span_handler(
