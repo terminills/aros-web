@@ -167,7 +167,9 @@ int main(int argc, char **argv)
     strcpy(root_ascii, profile_root);
     owner = FindTask(NULL);
     port = CreateMsgPort();
+    KPrintF("[CEF-HOST] opening facade task=%p version=%ld\n", owner, (LONG)CEFVERSION);
     CEFBase = OpenLibrary(CEFNAME, CEFVERSION);
+    if (!CEFBase) KPrintF("[CEF-HOST] facade open failed ioerr=%ld\n", IoErr());
     KPrintF("[CEF-HOST] startup port=%p facade=%p owner=%p\n", port, CEFBase, owner);
     if (!port || !CEFBase || CEFHostRegisterPort(port, NULL) != CEF_HOST_OK) goto done;
     registered = 1;
