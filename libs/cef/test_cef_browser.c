@@ -93,6 +93,10 @@ static int last_frame_width;
 static int last_frame_height;
 static size_t last_frame_size;
 static ULONG pump_tick;
+#ifdef CEF_BROWSER_CHROME_WINDOW
+static int chrome_document_available;
+static ULONG chrome_document_tick;
+#endif
 static const char *snapshot_path;
 
 static cef_client_t client;
@@ -366,6 +370,13 @@ static void CEF_CALLBACK on_document_available_in_main_frame(
 {
     (void)self;
     KPrintF("[CEF-BROWSER] document-available tick=%lu\n", pump_tick);
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    if (!chrome_document_available) {
+        chrome_document_available = 1;
+        chrome_document_tick = pump_tick;
+        KPrintF("[CEF-CHROME-WINDOW] navigation-ready; visual verification required\n");
+    }
+#endif
     release_browser_reference(cef_browser);
 }
 

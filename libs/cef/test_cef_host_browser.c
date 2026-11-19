@@ -50,6 +50,23 @@ static ULONG create_timeout_ticks = CREATE_TIMEOUT_TICKS;
 static int view_started, view_done, view_result = RETURN_FAIL;
 static char window_title[96];
 
+static int view_is_ready(void)
+{
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    return chrome_document_available;
+#else
+    return first_paint;
+#endif
+}
+static ULONG view_ready_tick(void)
+{
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    return chrome_document_tick;
+#else
+    return first_paint_tick;
+#endif
+}
+
 static int handlers_released(int include_task)
 {
     unsigned i; int ready = 1;
@@ -101,7 +118,7 @@ static void finish_view(void)
 {
     if (browser_window) { CloseWindow(browser_window); browser_window = NULL; }
     if (last_frame) { FreeVec(last_frame); last_frame = NULL; }
-    view_result = first_paint && !reference_error ? RETURN_OK : RETURN_FAIL;
+    view_result = view_is_ready() && !reference_error ? RETURN_OK : RETURN_FAIL;
     view_done = 1;
     Signal(application_task, 1UL << done_signal);
     /* The application sends a host request as a UI-queue barrier before it
@@ -113,6 +130,7 @@ static int start_view(void)
     cef_browser_settings_t settings = {0};
     cef_string_t url = {0};
     snprintf(window_title, sizeof(window_title), "CEF shared engine - %s", application_name);
+#ifndef CEF_BROWSER_CHROME_WINDOW
     browser_window = OpenWindowTags(NULL,
         WA_Title, (IPTR)window_title, WA_Left, 20 + (application_name[0] == 'B' ? 160 : 0),
         WA_Top, 45 + (application_name[0] == 'B' ? 90 : 0),
@@ -124,9 +142,19 @@ static int start_view(void)
             IDCMP_MOUSEMOVE | IDCMP_MOUSEBUTTONS | IDCMP_ACTIVEWINDOW | IDCMP_INACTIVEWINDOW,
         TAG_DONE);
     if (!browser_window) return 0;
+#endif
     initialize_handlers();
+#ifdef CEF_BROWSER_CHROME_WINDOW
+    /* Chrome creates its own Aura/Ozone window and browser controls. A load
+     * callback is navigation evidence, not proof that the window painted. */
+    info.size = sizeof(info);
+    info.runtime_style = CEF_RUNTIME_STYLE_CHROME;
+    info.bounds.width = 800;
+    info.bounds.height = 600;
+#else
     info.size = sizeof(info); info.windowless_rendering_enabled = 1;
     info.bounds.width = browser_window->GZZWidth; info.bounds.height = browser_window->GZZHeight;
+#endif
     settings.size = sizeof(settings);
     set_static_cef_string(&url, url_override, url_override_len);
     client.base.add_ref(&client.base);
@@ -145,9 +173,9 @@ static void CEF_CALLBACK tick(cef_task_t *self)
     }
     ++pump_tick;
     if (browser_window) handle_window_messages();
-    if (first_paint && pump_tick >= first_paint_tick + hold_ticks)
+    if (view_is_ready() && pump_tick >= view_ready_tick() + hold_ticks)
         request_browser_close();
-    if (!first_paint && pump_tick > create_timeout_ticks)
+    if (!view_is_ready() && pump_tick > create_timeout_ticks)
         request_browser_close();
     if (browser_closed && handlers_released(0)) { finish_view(); return; }
     if (browser_closed && pump_tick % 250 == 0) report_pending_handlers();
