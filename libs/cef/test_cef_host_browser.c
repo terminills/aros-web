@@ -62,6 +62,36 @@ static int handlers_released(int include_task)
     ReleaseSemaphore(&reference_lock);
     return ready;
 }
+static void report_pending_handlers(void)
+{
+    struct { cef_base_ref_counted_t *base; LONG count; } pending[8];
+    unsigned i, count;
+    int error;
+    ObtainSemaphore(&reference_lock);
+    count = reference_count;
+    error = reference_error;
+    for (i = 0; i < count; ++i) {
+        pending[i].base = references[i].base;
+        pending[i].count = references[i].count;
+    }
+    ReleaseSemaphore(&reference_lock);
+    /* Print outside the reference lock; this is observation only. The
+     * callback-drain barrier and ownership counts remain unchanged. */
+    for (i = 0; i < count; ++i) {
+        const char *name;
+        cef_base_ref_counted_t *base = pending[i].base;
+        if (base == &tick_task.base || pending[i].count == 1) continue;
+        name = base == &client.base ? "client" :
+            base == &request_handler.base ? "request" :
+            base == &load_handler.base ? "load" :
+            base == &display_handler.base ? "display" :
+            base == &render_handler.base ? "render" :
+            base == &life_span_handler.base ? "life-span" : "unknown";
+        KPrintF("[CEF-HOST-REF] app=%s handler=%s count=%ld tick=%lu\n",
+            application_name, name, pending[i].count, pump_tick);
+    }
+    if (error) KPrintF("[CEF-HOST-REF] app=%s reference-error=1\n", application_name);
+}
 static int schedule_tick(void)
 {
     tick_task.base.add_ref(&tick_task.base); /* C API transfers this reference. */
@@ -120,6 +150,7 @@ static void CEF_CALLBACK tick(cef_task_t *self)
     if (!first_paint && pump_tick > create_timeout_ticks)
         request_browser_close();
     if (browser_closed && handlers_released(0)) { finish_view(); return; }
+    if (browser_closed && pump_tick % 250 == 0) report_pending_handlers();
     if (!schedule_tick()) {
         /* Keep the application loaded if callbacks still exist. A failed post
          * is diagnostic failure, never permission to unload referenced code. */
