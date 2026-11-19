@@ -46,6 +46,7 @@ static cef_task_t tick_task;
 static struct Task *application_task;
 static BYTE done_signal = -1;
 static ULONG hold_ticks = 1500;
+static ULONG create_timeout_ticks = CREATE_TIMEOUT_TICKS;
 static int view_started, view_done, view_result = RETURN_FAIL;
 static char window_title[96];
 
@@ -116,7 +117,7 @@ static void CEF_CALLBACK tick(cef_task_t *self)
     if (browser_window) handle_window_messages();
     if (first_paint && pump_tick >= first_paint_tick + hold_ticks)
         request_browser_close();
-    if (!first_paint && pump_tick > CREATE_TIMEOUT_TICKS)
+    if (!first_paint && pump_tick > create_timeout_ticks)
         request_browser_close();
     if (browser_closed && handlers_released(0)) { finish_view(); return; }
     if (!schedule_tick()) {
@@ -145,6 +146,16 @@ int main(int argc, char **argv)
     if (argc < 3 || strlen(argv[1]) >= CEF_HOST_NAME_MAX || !set_url_override(argv[2])) return RETURN_ERROR;
     application_name = argv[1];
     if (argc > 3) hold_ticks = strtoul(argv[3], NULL, 10);
+    /* Optional diagnostic budget; the default and acceptance are unchanged. */
+    if (argc > 4) {
+        char *end;
+        unsigned long value = strtoul(argv[4], &end, 10);
+        if (!argv[4][0] || *end || value < 1 || value > 30000)
+            return RETURN_ERROR;
+        create_timeout_ticks = value;
+    }
+    KPrintF("[CEF-HOST-VIEW] %s startup-budget=%lu hold=%lu\n",
+            application_name, create_timeout_ticks, hold_ticks);
     settle_ticks = hold_ticks ? hold_ticks : 1;
     InitSemaphore(&reference_lock);
     application_task = FindTask(NULL);
