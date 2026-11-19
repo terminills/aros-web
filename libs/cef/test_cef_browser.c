@@ -28,6 +28,7 @@
 #include "include/capi/cef_display_handler_capi.h"
 #include "include/capi/cef_load_handler_capi.h"
 #include "include/capi/cef_render_handler_capi.h"
+#include "include/capi/cef_request_handler_capi.h"
 
 /* Whole-guest accounting, sampled only at lifecycle boundaries. Other tasks
  * can allocate between calls; these are not exclusive engine heap totals. */
@@ -98,6 +99,7 @@ static cef_client_t client;
 static cef_render_handler_t render_handler;
 static cef_load_handler_t load_handler;
 static cef_display_handler_t display_handler;
+static cef_request_handler_t request_handler;
 static cef_life_span_handler_t life_span_handler;
 
 /*
@@ -339,6 +341,30 @@ static void release_browser_reference(cef_browser_t *cef_browser)
 {
     if (cef_browser != NULL && cef_browser->base.release != NULL)
         cef_browser->base.release(&cef_browser->base);
+}
+
+static cef_request_handler_t *CEF_CALLBACK get_request_handler(cef_client_t *self)
+{
+    (void)self;
+    request_handler.base.add_ref(&request_handler.base);
+    return &request_handler;
+}
+
+static void CEF_CALLBACK on_render_process_terminated(
+    cef_request_handler_t *self, cef_browser_t *cef_browser,
+    cef_termination_status_t status, int error_code,
+    const cef_string_t *error_string)
+{
+    (void)self; (void)cef_browser; (void)error_string;
+    KPrintF("[CEF-BROWSER] renderer-terminated status=%ld error=%ld tick=%lu\n",
+            (LONG)status, (LONG)error_code, pump_tick);
+}
+
+static void CEF_CALLBACK on_document_available_in_main_frame(
+    cef_request_handler_t *self, cef_browser_t *cef_browser)
+{
+    (void)self; (void)cef_browser;
+    KPrintF("[CEF-BROWSER] document-available tick=%lu\n", pump_tick);
 }
 
 static cef_life_span_handler_t *CEF_CALLBACK get_life_span_handler(
@@ -752,12 +778,18 @@ static void initialize_handlers(void)
     memset(&life_span_handler, 0, sizeof(life_span_handler));
     memset(&load_handler, 0, sizeof(load_handler));
     memset(&display_handler, 0, sizeof(display_handler));
+    memset(&request_handler, 0, sizeof(request_handler));
 
     initialize_base(&client.base, sizeof(client));
     client.get_life_span_handler = get_life_span_handler;
     client.get_render_handler = get_render_handler;
     client.get_load_handler = get_load_handler;
     client.get_display_handler = get_display_handler;
+    client.get_request_handler = get_request_handler;
+
+    initialize_base(&request_handler.base, sizeof(request_handler));
+    request_handler.on_render_process_terminated = on_render_process_terminated;
+    request_handler.on_document_available_in_main_frame = on_document_available_in_main_frame;
 
     initialize_base(&load_handler.base, sizeof(load_handler));
     load_handler.on_loading_state_change = on_loading_state_change;
