@@ -108,9 +108,11 @@ USER_DEPLIBS += $(CEF_ARM_IMAGE_LINK) $(CEF_ARM_IMAGE_PACK)
 endif
 
 ifeq ($(AROS_TARGET_CPU),x86_64)
-CEF_SECTION_LINK := $(SRCDIR)/$(CURDIR)/../../build/aros-engine-section-link.py
-CEF_SECTION_NAMES := $(SRCDIR)/$(CURDIR)/../../build/aros-engine-section-names.py
-USER_DEPLIBS += $(CEF_SECTION_LINK) $(CEF_SECTION_NAMES)
+CEF_X64_IMAGE_LINK := $(SRCDIR)/$(CURDIR)/../../build/aros-x64-engine-link.py
+CEF_X64_IMAGE_PACK := $(SRCDIR)/$(CURDIR)/../../build/aros-x64-engine-image.py
+CEF_X64_IMAGE_LD ?= $(CEF_SOURCE)/third_party/llvm-build/Release+Asserts/bin/ld.lld
+CEF_X64_IMAGE_OBJCOPY ?= $(CEF_SOURCE)/third_party/llvm-build/Release+Asserts/bin/llvm-objcopy
+USER_DEPLIBS += $(CEF_X64_IMAGE_LINK) $(CEF_X64_IMAGE_PACK)
 endif
 
 %build_module mmake=workbench-libs-cef-blink \
@@ -121,15 +123,14 @@ endif
     stripdebug=no
 
 ifeq ($(AROS_TARGET_CPU),x86_64)
-# Retain function symbols but avoid keeping duplicated per-function section
-# names in debug.library. Keep the original ELF beside the link metadata.
-CEF_SECTION_STRIP := $(STRIP)
-workbench-libs-cef-blink_LINK := python3 "$(CEF_SECTION_LINK)" \
-    --strip-command "$(CEF_SECTION_STRIP)" \
-    --metadata-dir "$(GENDIR)/$(CURDIR)/engine-section-names" -- \
+# Final-link one image before packaging, avoiding hundreds of thousands of
+# per-function loader allocations. Retain the exact final ELF/map for faults.
+workbench-libs-cef-blink_LINK := python3 "$(CEF_X64_IMAGE_LINK)" \
+    --lld "$(CEF_X64_IMAGE_LD)" \
+    --objcopy "$(CEF_X64_IMAGE_OBJCOPY)" \
+    --metadata-dir "$(GENDIR)/$(CURDIR)/engine-image" -- \
     $(workbench-libs-cef-blink_LINK)
-# Run the normal SDK strip operation inside the wrapper before compaction;
-# never pass the compacted duplicate section labels back through BFD tools.
+# The packer validates every relocation; do not pass its compact ELF to strip.
 $(workbench-libs-cef-blink_MODULE): STRIP :=
 endif
 
