@@ -6,12 +6,14 @@ A final image at zero lets relative references survive one image relocation.
 Keep unwind bytes unchanged: LLD must not deduplicate/rewrite .eh_frame.
 """
 import argparse
+import errno
 import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 
 LAYOUT = '''SECTIONS {
@@ -28,6 +30,36 @@ LAYOUT = '''SECTIONS {
 def sha(path):
     with path.open('rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+def publish_module(source, destination):
+    """Publish atomically even when link scratch storage is on another volume."""
+    try:
+        os.replace(source, destination)
+        return
+    except OSError as error:
+        if error.errno != errno.EXDEV:
+            raise
+    # The temporary copy must be beside the destination for atomic replacement.
+    # Keep the old module and packed source intact if copying or validation fails.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=destination.name + '.',
+                                         suffix='.tmp', dir=destination.parent,
+                                         delete=False) as output:
+            temporary = Path(output.name)
+            with source.open('rb') as input_stream:
+                shutil.copyfileobj(input_stream, output)
+            output.flush()
+            os.fsync(output.fileno())
+        shutil.copymode(source, temporary)
+        if sha(temporary) != sha(source):
+            raise OSError('packed module copy failed SHA-256 verification')
+        os.replace(temporary, destination)
+        temporary = None
+        source.unlink()
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -71,9 +103,7 @@ def main():
                   output_sha256=sha(packed), compiler_command=command,
                   final_arguments=arguments, destination=str(destination))
     (attempt / 'result.json').write_text(json.dumps(result, indent=2) + '\n')
-    # The SDK module and metadata normally share a filesystem. Do not fall
-    # back to a partial copy if they do not: keep the existing module intact.
-    os.replace(packed, destination)
+    publish_module(packed, destination)
     for name in ['native-final.elf', 'native-final.map', 'native-final.ld',
                  'native-final.log', 'collect.log', 'result.json']:
         os.replace(attempt / name, metadata / name)
