@@ -4,11 +4,11 @@ CEF_SOURCE ?= $(CHROMIUM_SRC)
 CEF_OUTPUT ?= $(CEF_SOURCE)/out/aros-cef156
 CEF_HEADERS := $(CEF_SOURCE)/cef
 CEF_GENERATED_HEADERS := $(CEF_OUTPUT)/gen/cef
-#MM workbench-tools-cefhost : workbench-libs-cef
+#MM workbench-tools-cefhost : workbench-libs-cef workbench-libs-vulkan
 %build_prog mmake=workbench-tools-cefhost \
     progname=CEFHost files=CEFHost targetdir=$(AROS_SYSTEM) \
     cflags="$(TARGET_ISA_CFLAGS) $(TARGET_CFLAGS) -DCEF_API_VERSION=15600 -I$(CEF_HEADERS) -I$(CEF_GENERATED_HEADERS) -I$(CEF_SOURCE)" \
-    ldflags="$(TARGET_LDFLAGS)" uselibs="cef v8 dos exec debug"
+    ldflags="$(TARGET_LDFLAGS)" uselibs="cef v8 vulkan dos exec debug"
 #MM workbench-tools-cefhost-probe : workbench-libs-cef
 %build_prog mmake=workbench-tools-cefhost-probe \
     progname=CEFHostProbe files=CEFHostProbe targetdir=$(AROS_SYSTEM) \

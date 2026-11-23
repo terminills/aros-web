@@ -13,6 +13,7 @@
 #include <proto/dos.h>
 #include <proto/exec.h>
 #include <proto/debug.h>
+#include "native_graphics.h"
 #include <proto/v8.h>
 #include "include/capi/cef_app_capi.h"
 #include "include/capi/cef_task_capi.h"
@@ -263,7 +264,7 @@ int main(int argc, char **argv)
         }
     }
     /* Let Ozone select from the native device capabilities by default. */
-    if (software_rendering) {
+    if (software_rendering || !native_vulkan_available()) {
         args[main_args.argc++] = "--disable-gpu";
         args[main_args.argc++] = "--disable-gpu-compositing";
     } else {
