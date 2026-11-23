@@ -209,7 +209,7 @@ int main(int argc, char **argv)
     struct Message *msg;
     int registered = 0, published = 0, initialized = 0, result = RETURN_FAIL;
     APTR alloc = NULL, free_fn = NULL;
-    char *args[6] = {argv[0], "--single-process", NULL};
+    char *args[8] = {argv[0], "--single-process", NULL};
     cef_main_args_t main_args = {2, args};
     cef_settings_t settings = {0};
     cef_char_t subprocess_path[1024];
@@ -266,6 +266,10 @@ int main(int argc, char **argv)
     if (software_rendering) {
         args[main_args.argc++] = "--disable-gpu";
         args[main_args.argc++] = "--disable-gpu-compositing";
+    } else {
+        args[main_args.argc++] = "--aros-enable-gpu-compositing";
+        args[main_args.argc++] = "--use-gl=angle";
+        args[main_args.argc++] = "--use-angle=vulkan";
     }
     if (debug_native) {
         /* Retain INFO/error diagnostics on AROS DEBUG: for native test runs. */
