@@ -209,19 +209,21 @@ int main(int argc, char **argv)
     struct Message *msg;
     int registered = 0, published = 0, initialized = 0, result = RETURN_FAIL;
     APTR alloc = NULL, free_fn = NULL;
-    char *args[] = {argv[0], "--single-process", "--disable-gpu", "--disable-gpu-compositing", NULL, NULL};
-    cef_main_args_t main_args = {4, args};
+    char *args[6] = {argv[0], "--single-process", NULL};
+    cef_main_args_t main_args = {2, args};
     cef_settings_t settings = {0};
     cef_char_t subprocess_path[1024];
     char subprocess_ascii[1024];
     char resources_ascii[1024], locales_ascii[1024];
     int native_children = 0, debug_native = 0, root_supplied = 0;
+    int software_rendering = 0;
     const char *profile_root = "ENVARC:CEF/Profiles";
     const char *resource_root = "Developer:CEF";
     int resource_supplied = 0;
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "--native-children")) native_children = 1;
         else if (!strcmp(argv[i], "--debug-native")) debug_native = 1;
+        else if (!strcmp(argv[i], "--software-rendering")) software_rendering = 1;
         else if (!strcmp(argv[i], "--allow-stop")) allow_stop = 1;
         else if (!strcmp(argv[i], "--resources-dir")) {
             if (resource_supplied || i + 1 >= argc || !argv[i + 1][0]) {
@@ -232,7 +234,7 @@ int main(int argc, char **argv)
             resource_supplied = 1;
         }
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "?")) {
-            Printf("Usage: CEFHost [profile-root] [--native-children] [--debug-native] [--allow-stop] [--resources-dir directory]\n");
+            Printf("Usage: CEFHost [profile-root] [--native-children] [--debug-native] [--software-rendering] [--allow-stop] [--resources-dir directory]\n");
             return RETURN_OK;
         } else if (!argv[i][0] || argv[i][0] == '-' || root_supplied) {
             Printf("CEF host: invalid argument; use --help\n");
@@ -260,10 +262,14 @@ int main(int argc, char **argv)
             return RETURN_ERROR;
         }
     }
+    /* Let Ozone select from the native device capabilities by default. */
+    if (software_rendering) {
+        args[main_args.argc++] = "--disable-gpu";
+        args[main_args.argc++] = "--disable-gpu-compositing";
+    }
     if (debug_native) {
         /* Retain INFO/error diagnostics on AROS DEBUG: for native test runs. */
-        args[4] = "--enable-logging=system";
-        main_args.argc = 5;
+        args[main_args.argc++] = "--enable-logging=system";
     }
     if (!to_utf16(root, sizeof(root) / sizeof(*root), profile_root) ||
         !prepare_profile_root(profile_root) ||
